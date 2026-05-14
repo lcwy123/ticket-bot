@@ -594,8 +594,8 @@ class XianyuMessageListener:
             session_id = f"xianyu_{user}"
             context = await self.context_manager.get_context(user, session_id)
 
-            # ========== 订单意图识别 ==========
-            order_intent = self.customer_service.identify_order_intent(aggregated_content)
+            # ========== 订单意图识别（AI增强版）==========
+            order_intent = await self.customer_service.identify_intent_ai(aggregated_content)
 
             if order_intent and order_intent["confidence"] > 0.65:
                 # 高置信度下单意图，尝试创建订单
@@ -628,11 +628,16 @@ class XianyuMessageListener:
     async def _handle_order_intent(self, user: str, message: str, order_intent: dict, context: dict) -> str:
         """处理下单意图"""
         try:
-            # 提取订单信息
+            # 优先使用AI提取的实体信息
+            ai_entities = order_intent.get("entities", {})
             order_entities = self.customer_service.extract_order_entities(message, context)
 
+            # 合并实体，AI提取的优先
+            movie_name = ai_entities.get("movie") or order_entities.get("movie")
+            quantity = ai_entities.get("quantity") or order_entities.get("quantity", 2)
+            city = ai_entities.get("city") or order_entities.get("city", "北京")
+
             # 获取电影名（尝试从上下文或消息中推断）
-            movie_name = order_entities.get("movie")
             if not movie_name:
                 # 尝试从对话历史中推断用户想买的电影
                 history = context.get("history", [])

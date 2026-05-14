@@ -92,8 +92,21 @@ router.py           # FastAPI 路由（/api/customer-service/*）
 ### 相关服务
 
 - **`app/services/lark_service.py`** — 飞书开放API（发消息、获取用户信息）
+- **`app/services/lark_websocket_client.py`** — 飞书WebSocket长连接客户端
+- **`app/services/lark_mobile_agent.py`** — 飞书手机控制Agent
 - **`app/modules/lark_agent/router.py`** — 飞书Agent Webhook（手机控制专用）
 - **`app/services/notification_driver.py`** — Webhook端点 + ADB通知监控
+
+## 设备控制模式
+
+系统支持两种设备控制模式：
+- **APP模式 (use_app_mode=true)**: 通过 ADB/XianyuAppClient 控制 Android 设备
+- **AutoJS模式**: 通过 AutoJS 脚本在设备上执行操作（更稳定，支持无ROOT）
+
+相关文件：
+- `app/services/xianyu_app_client.py` — ADB设备控制
+- `app/services/autojs_device_client.py` — AutoJS设备通信
+- `app/services/autojs_router.py` — AutoJS API路由
 
 ## 票务模块架构（`app/modules/ticket/`）
 
@@ -102,6 +115,7 @@ router.py           # FastAPI 路由（/api/customer-service/*）
 - `pricing_engine.py` — 智能报价（成本 + 利润计算）
 - `channel_service.py` — 渠道成本管理
 - `order_service.py` — 订单生命周期
+- `models.py` — Pydantic数据模型
 - `router.py` — 票务API路由
 
 ## 监控模块架构（`app/modules/monitor/`）

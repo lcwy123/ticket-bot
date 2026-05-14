@@ -31,16 +31,36 @@ class ChatMessage:
 
 
 class CustomerService:
-    SYSTEM_PROMPT = """你是一个闲鱼平台的AI客服助手，专门帮助用户解答关于电影票购买的问题。
+    SYSTEM_PROMPT = """你是一个专业的闲鱼电影票代购客服助手，名为"票小二"。
 
-    你可以帮用户：
-    1. 解答关于电影票价格的咨询
-    2. 推荐热门电影
-    3. 说明购票流程
-    4. 处理常见的售后问题
+## 你的核心能力
+1. **电影票咨询**：解答票价、场次、影院等问题
+2. **智能下单**：理解用户买票需求，引导完成代购流程
+3. **个性推荐**：根据用户偏好推荐热门电影和优惠
+4. **订单跟进**：帮助用户查询订单状态
 
-    请用友好、专业的语气回复。如果用户询问你不知道的信息，请引导用户联系人工客服。
-    """
+## 对话风格要求
+- 亲切友好，像朋友聊天一样自然
+- 专业高效，准确回答票务问题
+- 适度营销，在对话中自然推荐优惠
+- 使用口语化表达，避免过于正式的书面语
+
+## 重要业务规则
+1. 代购手续费：5%，最低2元
+2. 回复用户前先理解其真实需求（买票？问价？投诉？）
+3. 如果用户表现出下单意图，务必确认：电影名、日期、数量、影院
+4. 不确定的信息不要瞎猜，可以说"帮您查一下"
+5. 遇到复杂问题或情绪化用户，及时转人工
+
+## 上下文理解
+- 记住用户之前询问的电影或偏好
+- 如果用户说"还是那个"、"继续"等，指代之前讨论的内容
+- 结合用户历史对话提供连贯服务
+
+## 回复格式建议
+- 简短的确认+信息：不用长篇大论
+- 涉及价格时：主动说明是否有优惠
+- 下单场景：清晰列出订单信息让用户确认"""
 
     def __init__(self):
         self.redis = redis.from_url(settings.redis_url, decode_responses=True)
@@ -99,17 +119,48 @@ class CustomerService:
         self,
         user_id: str,
         message: str,
-        context: Dict,
+        context: Dict = None,
         session_id: Optional[str] = None
     ) -> str:
-        """带上下文的AI客服对话"""
-        system_with_context = self.SYSTEM_PROMPT + "\n\n当前用户信息：\n"
-        if context.get("user_name"):
-            system_with_context += f"用户名：{context['user_name']}\n"
-        if context.get("recent_orders"):
-            system_with_context += f"最近订单：{context['recent_orders']}\n"
-        if context.get("preferences"):
-            system_with_context += f"用户偏好：{context['preferences']}\n"
+        """带上下文的AI客服对话（增强版）"""
+        # 如果没有传入context，自动获取用户上下文
+        if context is None:
+            context = await self.get_context_for_user(user_id, session_id)
+
+        # 构建增强版系统提示
+        system_parts = [self.SYSTEM_PROMPT, "\n\n## 当前用户信息"]
+
+        # 用户偏好信息
+        prefs = context.get("preferences", {})
+        if prefs.get("favorite_movies"):
+            movies = "、".join(prefs["favorite_movies"][:5])
+            system_parts.append(f"- 常看的电影：{movies}")
+        if prefs.get("favorite_cities"):
+            system_parts.append(f"- 常在城市：{', '.join(prefs['favorite_cities'])}")
+        if prefs.get("preferred_quantity"):
+            system_parts.append(f"- 购票数量偏好：{prefs['preferred_quantity']}张")
+        if prefs.get("total_orders", 0) > 0:
+            system_parts.append(f"- 累计订单数：{prefs['total_orders']}笔")
+
+        # 最近订单
+        last_order = prefs.get("last_order")
+        if last_order:
+            system_parts.append(f"\n## 最近订单")
+            system_parts.append(f"- 电影：{last_order.get('movie_name', '未知')}")
+            system_parts.append(f"- 影院：{last_order.get('cinema', '未知')}")
+            system_parts.append(f"- 数量：{last_order.get('quantity', 2)}张")
+
+        # 对话历史摘要
+        recent_history = context.get("recent_history", [])
+        if recent_history:
+            system_parts.append(f"\n## 最近对话")
+            for msg in recent_history[-4:]:  # 最近2轮对话
+                role = "用户" if msg.get("role") == "user" else "助手"
+                content = msg.get("content", "")[:100]
+                if content:
+                    system_parts.append(f"- {role}：{content}")
+
+        system_with_context = "\n".join(system_parts)
 
         if not session_id:
             session_id = str(uuid.uuid4())
@@ -229,6 +280,128 @@ class CustomerService:
     async def get_pending_messages_count(self) -> int:
         """获取待处理消息数量"""
         return self.redis.llen(self.message_queue_key)
+
+    # ============== 用户偏好管理 ==============
+
+    USER_PREFERENCES_KEY = "xianyu:chat:preferences:"
+
+    async def get_user_preferences(self, user_id: str) -> Dict:
+        """
+        获取用户偏好设置
+        包含：常看电影、常去城市、偏好影院、上次订单等
+        """
+        key = f"{self.USER_PREFERENCES_KEY}{user_id}"
+        data = self.redis.get(key)
+        if data:
+            return json.loads(data)
+        return {
+            "favorite_movies": [],
+            "favorite_cities": [],
+            "favorite_cinemas": [],
+            "last_order": None,
+            "total_orders": 0,
+            "preferred_quantity": 2,
+        }
+
+    async def update_user_preferences(self, user_id: str, preferences: Dict):
+        """更新用户偏好设置"""
+        key = f"{self.USER_PREFERENCES_KEY}{user_id}"
+        # 合并现有偏好和新偏好
+        existing = await self.get_user_preferences(user_id)
+        existing.update(preferences)
+        self.redis.set(key, json.dumps(existing), ex=86400 * 30)  # 30天过期
+
+    async def record_user_order(self, user_id: str, order_info: Dict):
+        """记录用户的订单，用于偏好学习"""
+        prefs = await self.get_user_preferences(user_id)
+        # 更新最后订单
+        prefs["last_order"] = order_info
+        prefs["total_orders"] = prefs.get("total_orders", 0) + 1
+        # 如果是新电影，加入收藏
+        movie = order_info.get("movie_name")
+        if movie and movie not in prefs["favorite_movies"]:
+            prefs["favorite_movies"].insert(0, movie)
+            if len(prefs["favorite_movies"]) > 10:
+                prefs["favorite_movies"] = prefs["favorite_movies"][:10]
+        # 更新常购数量
+        prefs["preferred_quantity"] = order_info.get("quantity", 2)
+        await self.update_user_preferences(user_id, prefs)
+
+    async def get_context_for_user(self, user_id: str, session_id: str = None) -> Dict:
+        """
+        构建发送给AI的完整上下文
+        包含：用户偏好、历史对话摘要、最后订单
+        """
+        prefs = await self.get_user_preferences(user_id)
+        history = []
+        if session_id:
+            history = await self.get_conversation_history(session_id, limit=6)
+
+        context = {
+            "user_id": user_id,
+            "preferences": prefs,
+            "recent_history": history[-6:] if history else [],
+        }
+        return context
+
+    # ============== AI意图识别 ==============
+
+    INTENT_PROMPT = """分析用户消息的意图，只返回JSON格式的纯文本，不要有其他内容。
+
+用户消息：{message}
+
+可能的意图类型：
+- buy_ticket：想买电影票（包含电影名、数量、日期等）
+- inquiry：只是咨询价格或信息
+- complaint：投诉或售后问题
+- casual：闲聊或问候
+- other：其他
+
+同时提取关键信息（如果能提取的话）：
+- movie: 用户想看的电影名
+- quantity: 购票数量（数字）
+- city: 城市
+- time: 观影时间描述
+
+请返回如下格式的JSON（不要有其他文字）：
+{{"intent": "意图类型", "confidence": 0.0-1.0, "entities": {{"movie": "...", "quantity": 数字, "city": "...", "time": "..."}}}}"""
+
+    async def identify_intent_ai(self, message: str) -> Optional[Dict]:
+        """
+        使用AI识别用户意图（增强版）
+        返回意图类型、置信度和提取的实体信息
+        """
+        try:
+            response = self.anthropic.messages.create(
+                model=settings.anthropic_model,
+                max_tokens=256,
+                system="你是一个意图识别助手，专门分析用户消息的买票意图。",
+                messages=[{"role": "user", "content": self.INTENT_PROMPT.format(message=message)}]
+            )
+
+            # 解析AI返回的JSON
+            reply = ""
+            for block in response.content:
+                if block.type == "text" and block.text:
+                    reply = block.text.strip()
+                    break
+
+            import re
+            # 提取JSON
+            json_match = re.search(r'\{.*\}', reply, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                # 确保返回格式正确
+                return {
+                    "intent": result.get("intent", "other"),
+                    "confidence": result.get("confidence", 0.5),
+                    "entities": result.get("entities", {})
+                }
+
+        except Exception as e:
+            logger.error(f"AI intent recognition error: {e}")
+
+        return {"intent": "other", "confidence": 0.0, "entities": {}}
 
     def identify_order_intent(self, message: str) -> Optional[Dict]:
         """
