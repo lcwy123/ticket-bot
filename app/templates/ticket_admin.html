@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>票务管理后台</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { color: #333; margin-bottom: 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h2 { color: #666; font-size: 16px; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; background: #e0e0e0; border: none; border-radius: 6px; cursor: pointer; }
+        .tab.active { background: #007bff; color: white; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; }
+        th { background: #f8f8f8; color: #666; font-weight: 500; }
+        .status { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .status.pending { background: #fff3cd; color: #856404; }
+        .status.quoted { background: #cce5ff; color: #004085; }
+        .status.paid { background: #d4edda; color: #155724; }
+        .status.booked { background: #d1ecf1; color: #0c5460; }
+        .status.completed { background: #28a745; color: white; }
+        .btn { padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-sm { padding: 4px 8px; font-size: 12px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #666; font-size: 14px; }
+        input, select { width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .row { display: flex; gap: 15px; }
+        .col { flex: 1; }
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
+        .stat-card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stat-value { font-size: 28px; font-weight: bold; color: #333; }
+        .stat-label { color: #666; font-size: 14px; margin-top: 5px; }
+        .profit { color: #28a745; }
+        .quote-result { background: #f8f9fa; padding: 15px; border-radius: 6px; margin-top: 15px; }
+        .quote-result .price { font-size: 24px; font-weight: bold; color: #007bff; }
+        .hidden { display: none; }
+        .msg { padding: 10px 15px; border-radius: 4px; margin-bottom: 15px; }
+        .msg.success { background: #d4edda; color: #155724; }
+        .msg.error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>票务管理后台</h1>
+
+        <!-- 统计卡片 -->
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="stat-total">0</div>
+                <div class="stat-label">总订单数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-pending">0</div>
+                <div class="stat-label">待处理</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-completed">0</div>
+                <div class="stat-label">已完成</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value profit" id="stat-profit">¥0</div>
+                <div class="stat-label">总利润</div>
+            </div>
+        </div>
+
+        <!-- 标签页 -->
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('orders')">订单管理</button>
+            <button class="tab" onclick="showTab('quote')">智能报价</button>
+            <button class="tab" onclick="showTab('channel')">渠道成本</button>
+            <button class="tab" onclick="showTab('search')">票价查询</button>
+        </div>
+
+        <!-- 消息提示 -->
+        <div id="msg" class="msg hidden"></div>
+
+        <!-- 订单管理 -->
+        <div id="tab-orders" class="card">
+            <h2>订单列表</h2>
+            <div style="margin-bottom: 15px;">
+                <select id="order-status-filter" onchange="loadOrders()">
+                    <option value="">全部状态</option>
+                    <option value="pending">待处理</option>
+                    <option value="quoted">已报价</option>
+                    <option value="accepted">已接受</option>
+                    <option value="paid">已付款</option>
+                    <option value="booked">已出票</option>
+                    <option value="completed">已完成</option>
+                </select>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>订单号</th>
+                        <th>买家</th>
+                        <th>电影</th>
+                        <th>影院</th>
+                        <th>报价</th>
+                        <th>利润</th>
+                        <th>状态</th>
+                        <th>取票码</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="orders-tbody">
+                    <tr><td colspan="9" style="text-align:center;color:#999;">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 智能报价 -->
+        <div id="tab-quote" class="card hidden">
+            <h2>智能报价（方案C: 就低不就高）</h2>
+            <div class="row">
+                <div class="col">
+                    <div class="form-group">
+                        <label>电影名称</label>
+                        <input type="text" id="quote-movie" placeholder="如: 哪吒之魔童闹海">
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="form-group">
+                        <label>城市</label>
+                        <input type="text" id="quote-city" value="北京">
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="batchQuote()">查询并批量报价</button>
+
+            <div id="quote-results"></div>
+        </div>
+
+        <!-- 渠道成本 -->
+        <div id="tab-channel" class="card hidden">
+            <h2>渠道成本管理</h2>
+            <div class="row">
+                <div class="col">
+                    <div class="form-group">
+                        <label>影院名称</label>
+                        <input type="text" id="channel-cinema" placeholder="如: 万达影城(北京朝阳店)">
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="form-group">
+                        <label>城市</label>
+                        <input type="text" id="channel-city" value="北京">
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col">
+                    <div class="form-group">
+                        <label>渠道成本价 (元)</label>
+                        <input type="number" step="0.1" id="channel-cost" placeholder="如: 25">
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="form-group">
+                        <label>备注</label>
+                        <input type="text" id="channel-remark" placeholder="如: 普通厅">
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="addChannelCost()">添加渠道成本</button>
+
+            <h3 style="margin: 20px 0 10px; font-size: 14px;">已有渠道成本</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>影院</th>
+                        <th>城市</th>
+                        <th>成本价</th>
+                        <th>备注</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="channel-tbody">
+                    <tr><td colspan="5" style="text-align:center;color:#999;">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 票价查询 -->
+        <div id="tab-search" class="card hidden">
+            <h2>官方票价查询</h2>
+            <div class="row">
+                <div class="col">
+                    <div class="form-group">
+                        <label>电影名称</label>
+                        <input type="text" id="search-movie" placeholder="如: 哪吒之魔童闹海">
+                    </div>
+                </div>
+                <div class="col">
+                    <div class="form-group">
+                        <label>城市</label>
+                        <input type="text" id="search-city" value="北京">
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="searchShows()">查询场次</button>
+
+            <div id="search-results"></div>
+        </div>
+    </div>
+
+    <!-- 录入取票码弹窗 -->
+    <div id="ticket-modal" class="card hidden" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:100;width:400px;">
+        <h2>录入取票码</h2>
+        <input type="hidden" id="modal-order-id">
+        <div class="form-group">
+            <label>取票码</label>
+            <input type="text" id="modal-ticket-code" placeholder="输入取票码">
+        </div>
+        <div style="display:flex;gap:10px;margin-top:15px;">
+            <button class="btn btn-primary" onclick="submitTicketCode()">确认</button>
+            <button class="btn" onclick="closeModal()" style="background:#ccc;">取消</button>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/ticket';
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.card').forEach(c => c.classList.add('hidden'));
+            document.querySelector(`[onclick="showTab('${tab}')"]`).classList.add('active');
+            document.getElementById(`tab-${tab}`).classList.remove('hidden');
+
+            if (tab === 'orders') loadOrders();
+            if (tab === 'channel') loadChannelCosts();
+            if (tab === 'search') {}
+        }
+
+        function showMsg(text, type = 'success') {
+            const msg = document.getElementById('msg');
+            msg.textContent = text;
+            msg.className = `msg ${type}`;
+            msg.classList.remove('hidden');
+            setTimeout(() => msg.classList.add('hidden'), 3000);
+        }
+
+        async function loadStats() {
+            try {
+                const res = await fetch(`${API_BASE}/statistics?days=30`);
+                const data = await res.json();
+                document.getElementById('stat-total').textContent = data.total_orders || 0;
+                document.getElementById('stat-pending').textContent = data.pending_orders || 0;
+                document.getElementById('stat-completed').textContent = data.completed_orders || 0;
+                document.getElementById('stat-profit').textContent = `¥${data.total_profit || 0}`;
+            } catch (e) {
+                console.error('加载统计失败', e);
+            }
+        }
+
+        async function loadOrders() {
+            const status = document.getElementById('order-status-filter').value;
+            let url = `${API_BASE}/orders?limit=100`;
+            if (status) url += `&status=${status}`;
+
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                const tbody = document.getElementById('orders-tbody');
+
+                if (data.orders.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;">暂无订单</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = data.orders.map(o => `
+                    <tr>
+                        <td>${o.order_id}</td>
+                        <td>${o.user_nickname || o.user_id}</td>
+                        <td>${o.movie_name}</td>
+                        <td>${o.cinema_name}</td>
+                        <td>¥${o.quoted_price}</td>
+                        <td class="profit">¥${o.profit || 0}</td>
+                        <td><span class="status ${o.status}">${o.status}</span></td>
+                        <td>${o.ticket_code || '-'}</td>
+                        <td>
+                            ${o.status === 'paid' ? `<button class="btn btn-primary btn-sm" onclick="openTicketModal('${o.order_id}')">录入取票码</button>` : ''}
+                            ${o.status === 'booked' ? `<button class="btn btn-primary btn-sm" onclick="updateStatus('${o.order_id}', 'completed')">确认完成</button>` : ''}
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error('加载订单失败', e);
+            }
+        }
+
+        function openTicketModal(orderId) {
+            document.getElementById('modal-order-id').value = orderId;
+            document.getElementById('ticket-modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('ticket-modal').classList.add('hidden');
+        }
+
+        async function submitTicketCode() {
+            const orderId = document.getElementById('modal-order-id').value;
+            const ticketCode = document.getElementById('modal-ticket-code').value;
+
+            if (!ticketCode) {
+                showMsg('请输入取票码', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/order/${orderId}/ticket-code`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ticket_code: ticketCode})
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showMsg('取票码录入成功');
+                    closeModal();
+                    loadOrders();
+                    loadStats();
+                }
+            } catch (e) {
+                showMsg('录入失败', 'error');
+            }
+        }
+
+        async function updateStatus(orderId, status) {
+            try {
+                await fetch(`${API_BASE}/order/${orderId}/status`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({status})
+                });
+                loadOrders();
+                loadStats();
+            } catch (e) {
+                showMsg('更新失败', 'error');
+            }
+        }
+
+        async function batchQuote() {
+            const movie = document.getElementById('quote-movie').value;
+            const city = document.getElementById('quote-city').value || '北京';
+
+            if (!movie) {
+                showMsg('请输入电影名称', 'error');
+                return;
+            }
+
+            document.getElementById('quote-results').innerHTML = '<p>查询中...</p>';
+
+            try {
+                const res = await fetch(`${API_BASE}/quote/batch?movie_name=${encodeURIComponent(movie)}&city=${encodeURIComponent(city)}`, {
+                    method: 'POST'
+                });
+                const data = await res.json();
+
+                if (data.quotes.length === 0) {
+                    document.getElementById('quote-results').innerHTML = '<p>未找到相关场次</p>';
+                    return;
+                }
+
+                document.getElementById('quote-results').innerHTML = `
+                    <h3 style="margin:15px 0 10px;">${data.movie_name} - 报价结果</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>影院</th>
+                                <th>影厅</th>
+                                <th>时间</th>
+                                <th>市价</th>
+                                <th>报价</th>
+                                <th>利润</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.quotes.map(q => `
+                                <tr>
+                                    <td>${q.cinema_name}</td>
+                                    <td>${q.hall_name}</td>
+                                    <td>${q.show_time}</td>
+                                    <td>¥${q.official_price}</td>
+                                    <td class="profit">¥${q.quoted_price}</td>
+                                    <td>¥${q.profit}</td>
+                                    <td>
+                                        <button class="btn btn-primary btn-sm" onclick="createOrderFromQuote('${q.cinema_name}', ${q.official_price}, ${q.quoted_price}, '${movie}', '${city}', '${q.show_time}')">
+                                            创建订单
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (e) {
+                document.getElementById('quote-results').innerHTML = '<p>查询失败</p>';
+            }
+        }
+
+        async function createOrderFromQuote(cinema, officialPrice, quotedPrice, movie, city, showTime) {
+            const userId = prompt('请输入买家ID或昵称:');
+            if (!userId) return;
+
+            try {
+                await fetch(`${API_BASE}/order`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        user_id: userId,
+                        user_nickname: userId,
+                        movie_name: movie,
+                        cinema_name: cinema,
+                        city: city,
+                        show_time: showTime,
+                        official_price: officialPrice,
+                        quoted_price: quotedPrice,
+                        actual_cost: 0
+                    })
+                });
+                showMsg('订单创建成功');
+                loadOrders();
+                loadStats();
+            } catch (e) {
+                showMsg('创建失败', 'error');
+            }
+        }
+
+        async function addChannelCost() {
+            const cinema = document.getElementById('channel-cinema').value;
+            const city = document.getElementById('channel-city').value || '北京';
+            const cost = document.getElementById('channel-cost').value;
+            const remark = document.getElementById('channel-remark').value;
+
+            if (!cinema || !cost) {
+                showMsg('请填写完整信息', 'error');
+                return;
+            }
+
+            try {
+                await fetch(`${API_BASE}/channel-cost`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        cinema_name: cinema,
+                        city: city,
+                        cost_price: parseFloat(cost),
+                        remark: remark
+                    })
+                });
+                showMsg('渠道成本添加成功');
+                document.getElementById('channel-cinema').value = '';
+                document.getElementById('channel-cost').value = '';
+                document.getElementById('channel-remark').value = '';
+                loadChannelCosts();
+            } catch (e) {
+                showMsg('添加失败', 'error');
+            }
+        }
+
+        async function loadChannelCosts() {
+            try {
+                const res = await fetch(`${API_BASE}/channel-cost`);
+                const data = await res.json();
+                const tbody = document.getElementById('channel-tbody');
+
+                if (data.costs.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;">暂无渠道成本</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = data.costs.map(c => `
+                    <tr>
+                        <td>${c.cinema_name}</td>
+                        <td>${c.city}</td>
+                        <td>¥${c.cost_price}</td>
+                        <td>${c.remark || '-'}</td>
+                        <td><button class="btn btn-sm" onclick="deleteChannelCost(${c.id})" style="background:#dc3545;color:white;">删除</button></td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error('加载渠道成本失败', e);
+            }
+        }
+
+        async function deleteChannelCost(id) {
+            if (!confirm('确认删除?')) return;
+            try {
+                await fetch(`${API_BASE}/channel-cost/${id}`, {method: 'DELETE'});
+                loadChannelCosts();
+            } catch (e) {
+                showMsg('删除失败', 'error');
+            }
+        }
+
+        async function searchShows() {
+            const movie = document.getElementById('search-movie').value;
+            const city = document.getElementById('search-city').value || '北京';
+
+            if (!movie) {
+                showMsg('请输入电影名称', 'error');
+                return;
+            }
+
+            document.getElementById('search-results').innerHTML = '<p>查询中...</p>';
+
+            try {
+                const res = await fetch(`${API_BASE}/official/showtimes?movie_name=${encodeURIComponent(movie)}&city=${encodeURIComponent(city)}`);
+                const data = await res.json();
+
+                if (data.showtimes.length === 0) {
+                    document.getElementById('search-results').innerHTML = '<p>未找到相关场次</p>';
+                    return;
+                }
+
+                document.getElementById('search-results').innerHTML = `
+                    <h3 style="margin:15px 0 10px;">${data.movie_name} - 场次信息</h3>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>影院</th>
+                                <th>影厅</th>
+                                <th>时间</th>
+                                <th>语言</th>
+                                <th>票价</th>
+                                <th>余票</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.showtimes.map(s => `
+                                <tr>
+                                    <td>${s.cinema_name}</td>
+                                    <td>${s.hall_name}</td>
+                                    <td>${s.show_date} ${s.show_time}</td>
+                                    <td>${s.language}</td>
+                                    <td>¥${s.price}</td>
+                                    <td>${s.remaining_seats}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (e) {
+                document.getElementById('search-results').innerHTML = '<p>查询失败</p>';
+            }
+        }
+
+        // 初始化
+        loadStats();
+        loadOrders();
+    </script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""闲鱼消息页面详细探索"""
+import asyncio
+import json
+from playwright.async_api import async_playwright
+from app.services.browser.anti_detect import AntiDetectBrowser
+
+anti_detect = AntiDetectBrowser()
+
+
+async def explore():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(**anti_detect.get_browser_context_args())
+
+        with open('/opt/ticket-bot/xianyu_cookies.json', 'r') as f:
+            cookies = json.load(f)
+        for cookie in cookies:
+            cookie.pop('sameSite', None)
+            try:
+                await context.add_cookies([cookie])
+            except:
+                pass
+
+        page = await context.new_page()
+
+        print('1. 访问消息页面...')
+        await page.goto('https://www.goofish.com/im', timeout=60000)
+        await asyncio.sleep(5)
+
+        await page.screenshot(path='/tmp/xianyu_msg_v2.png')
+
+        # 分析页面结构
+        print('2. 分析页面结构...')
+
+        # 获取所有文本节点
+        texts = await page.evaluate("""
+            () => {
+                const texts = [];
+                document.querySelectorAll('*').forEach(el => {
+                    const text = el.innerText?.trim();
+                    if (text && text.length > 1 && text.length < 100 && el.children.length === 0) {
+                        texts.push({
+                            tag: el.tagName,
+                            class: el.className.substring(0, 60),
+                            text: text.substring(0, 50)
+                        });
+                    }
+                });
+                return texts;
+            }
+        """)
+
+        # 去重
+        seen = set()
+        unique_texts = []
+        for t in texts:
+            if t['text'] not in seen:
+                seen.add(t['text'])
+                unique_texts.append(t)
+
+        print(f'   找到 {len(unique_texts)} 个唯一文本元素')
+        for t in unique_texts[:30]:
+            print(f'   [{t["tag"]}] {t["class"]}: {t["text"]}')
+
+        # 查找输入框
+        print('3. 查找输入框...')
+        inputs = await page.query_selector_all('input, textarea, [contenteditable]')
+        print(f'   找到 {len(inputs)} 个输入相关元素')
+        for inp in inputs[:5]:
+            try:
+                cls = await inp.get_attribute('class') or ''
+                ph = await inp.get_attribute('placeholder') or ''
+                print(f'   class={cls[:50]}, placeholder={ph[:30]}')
+            except:
+                pass
+
+        # 查找按钮
+        print('4. 查找按钮...')
+        btns = await page.query_selector_all('button')
+        print(f'   找到 {len(btns)} 个按钮')
+        for btn in btns[:10]:
+            try:
+                text = await btn.inner_text()
+                cls = await btn.get_attribute('class') or ''
+                if text.strip():
+                    print(f'   "{text.strip()[:30]}" class={cls[:50]}')
+            except:
+                pass
+
+        await browser.close()
+        print('完成')
+
+
+if __name__ == "__main__":
+    asyncio.run(explore())

@@ -1,0 +1,74 @@
+2026-05-09 10:02:54.719 | INFO     | __main__:test:8 - XianyuMessageListener imported successfully
+2026-05-12 10:46:14.549 | INFO     | app.main:lifespan:83 - Xianyu message listener started
+2026-05-12 10:46:14.549 | INFO     | app.main:lifespan:97 - 闲鱼AI助手 启动完成
+2026-05-12 10:46:14.549 | INFO     | app.modules.customer_service.message_listener:start:287 - Starting Xianyu message listener in Browser mode...
+2026-05-12 10:53:33.984 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 10:53:50.357 | INFO     | app.services.autojs_device_client:send_command:105 - [my_phone] 发送命令: click {'x': 540, 'y': 1200}
+2026-05-12 10:55:59.104 | INFO     | app.services.autojs_device_client:send_command:105 - [my_phone] 发送命令: click {'x': 540, 'y': 1200}
+2026-05-12 10:56:39.960 | INFO     | app.services.autojs_device_client:send_command:105 - [my_phone] 发送命令: getText {}
+2026-05-12 10:57:42.772 | INFO     | app.main:lifespan:101 - Shutting down...
+2026-05-12 10:57:42.773 | INFO     | app.modules.customer_service.message_listener:stop:810 - Stopping listener...
+2026-05-12 10:58:15.721 | INFO     | app.main:lifespan:83 - Xianyu message listener started
+2026-05-12 10:58:15.722 | INFO     | app.main:lifespan:97 - 闲鱼AI助手 启动完成
+2026-05-12 10:58:15.722 | INFO     | app.modules.customer_service.message_listener:start:287 - Starting Xianyu message listener in Browser mode...
+2026-05-12 11:00:00.005 | INFO     | app.modules.monitor.scheduler:check_price_changes:43 - Running check_price_changes job
+2026-05-12 11:00:00.005 | INFO     | app.modules.monitor.service:update_listed_prices:365 - Starting price update...
+2026-05-12 11:04:47.865 | INFO     | app.main:lifespan:101 - Shutting down...
+2026-05-12 11:04:47.865 | INFO     | app.modules.customer_service.message_listener:stop:810 - Stopping listener...
+2026-05-12 11:05:40.743 | INFO     | app.main:lifespan:83 - Xianyu message listener started
+2026-05-12 11:05:40.743 | INFO     | app.main:lifespan:97 - 闲鱼AI助手 启动完成
+2026-05-12 11:05:40.743 | INFO     | app.modules.customer_service.message_listener:start:287 - Starting Xianyu message listener in Browser mode...
+2026-05-12 13:38:30.863 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: test_device
+2026-05-12 13:59:29.008 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 13:59:30.946 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 13:59:35.895 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 13:59:40.840 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 13:59:44.595 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 13:59:55.222 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:00.182 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:04.849 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:09.779 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:14.650 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:19.664 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:25.282 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:30.458 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:39.863 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:41.850 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:44.821 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:49.786 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:00:55.381 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:00.302 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:05.217 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:10.144 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:15.052 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:19.946 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:24.900 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:30.464 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:35.393 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:40.203 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:45.127 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:50.052 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:54.973 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:01:59.883 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:05.480 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:10.398 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:15.310 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:20.229 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:25.128 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:30.077 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:35.640 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:40.511 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:45.413 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:50.323 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:02:55.222 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:00.178 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:05.187 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:10.030 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:14.971 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:19.948 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:24.932 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:42.606 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:43.372 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:45.363 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:50.367 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
+2026-05-12 14:03:55.833 | INFO     | app.services.autojs_device_client:register_device:137 - 设备已注册: my_phone
