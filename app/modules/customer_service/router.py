@@ -81,6 +81,43 @@ async def queue_message(
     return {"status": "queued", "session_id": session_id}
 
 
+class PhoneMessageRequest(BaseModel):
+    """手机端消息转发请求"""
+    user_id: str
+    content: str
+    device_id: Optional[str] = "unknown"
+
+
+@router.post("/phone/message")
+async def phone_forward_message(request: PhoneMessageRequest, background_tasks: BackgroundTasks):
+    """
+    接收手机端转发的闲鱼消息（AutoJS调用）
+
+    AutoJS监控到闲鱼新消息后调用此接口转发到客服处理
+    """
+    from app.modules.customer_service.service import CustomerService, MessageSource
+
+    logger.info(f"收到手机转发消息: {request.user_id} -> {request.content[:30]}...")
+
+    service = CustomerService()
+    msg = CustomerService.__new__(CustomerService)
+    msg.source = MessageSource.XIANYU  # 来自闲鱼APP
+    msg.user_id = request.user_id
+    msg.content = request.content
+    msg.session_id = ""
+    msg.metadata = {"device_id": request.device_id, "from_phone": True}
+
+    await service.queue_message(msg)
+
+    # 触发后台处理
+    async def process():
+        await service.process_message_queue()
+
+    background_tasks.add_task(process)
+
+    return {"status": "received", "processed": True}
+
+
 @router.post("/process-queue")
 async def process_queue(background_tasks: BackgroundTasks):
     """触发队列处理"""
