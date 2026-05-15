@@ -381,6 +381,38 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
                     # 心跳回复
                     logger.debug(f"收到 pong from {device_id}")
 
+                elif msg_type == "message":
+                    # 手机端转发闲鱼消息
+                    user_id = msg.get("user_id", "unknown")
+                    content = msg.get("content", "")
+                    source = msg.get("source", "xianyu_app")
+                    timestamp = msg.get("timestamp", asyncio.get_event_loop().time())
+                    logger.info(f"收到手机消息: {user_id} -> {content[:30]}...")
+
+                    # 转发到客服队列
+                    from app.modules.customer_service.service import CustomerService, MessageSource, ChatMessage
+                    service = CustomerService()
+                    chat_msg = ChatMessage(
+                        source=MessageSource.XIANYU,
+                        user_id=user_id,
+                        content=content,
+                        session_id="",
+                        timestamp=timestamp,
+                        metadata={"device_id": device_id, "from_phone": True, "source": source}
+                    )
+
+                    await service.queue_message(chat_msg)
+
+                    # 触发后台处理
+                    asyncio.create_task(service.process_message_queue())
+
+                    # 回复确认
+                    await websocket.send_json({
+                        "type": "message_received",
+                        "status": "ok",
+                        "user_id": user_id
+                    })
+
             except json.JSONDecodeError:
                 logger.error(f"JSON 解析失败: {data}")
 

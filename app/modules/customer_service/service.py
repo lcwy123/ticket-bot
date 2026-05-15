@@ -246,7 +246,7 @@ class CustomerService:
                     try:
                         await lark_service.send_text_message(
                             receive_id=settings.lark_app_id,
-                            text=f"闲鱼用户 {msg.user_id} 的问题已自动回复：\n{reply}"
+                            text=f"客户：{msg.user_id}发来消息\n内容：{msg.content}\n\nAI回复：{reply}"
                         )
                     except Exception as e:
                         logger.error(f"Failed to send Lark notification: {e}")
