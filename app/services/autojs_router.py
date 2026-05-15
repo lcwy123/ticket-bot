@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime
 import asyncio
 import json
+import os
 from loguru import logger
 
 from app.services.autojs_device_client import (
@@ -15,6 +16,48 @@ from app.services.autojs_device_client import (
     DeviceCommandServer,
     AutoJSDeviceClient
 )
+
+# ========== 手机日志记录 ==========
+PHONE_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
+PHONE_LOG_FILE = os.path.join(PHONE_LOG_DIR, "phone_client.log")
+PHONE_LOG_MAX_SIZE = 5 * 1024 * 1024  # 5MB
+
+_phone_log_lock = asyncio.Lock()
+
+
+def _rotate_phone_log():
+    """如果日志文件超过 5MB，截断保留后半部分"""
+    try:
+        if os.path.exists(PHONE_LOG_FILE) and os.path.getsize(PHONE_LOG_FILE) > PHONE_LOG_MAX_SIZE:
+            # 读取文件，保留后一半（约2.5MB）
+            with open(PHONE_LOG_FILE, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                total = f.tell()
+                keep = PHONE_LOG_MAX_SIZE // 2
+                f.seek(max(0, total - keep))
+                content = f.read()
+            with open(PHONE_LOG_FILE, "wb") as f:
+                f.write(b"... [older logs rotated] ...\n")
+                f.write(content)
+            logger.info(f"手机日志已截断: {os.path.getsize(PHONE_LOG_FILE)} bytes")
+    except Exception as e:
+        logger.warning(f"手机日志截断失败: {e}")
+
+
+def write_phone_log(device_id: str, level: str, message: str):
+    """写入手机日志到文件"""
+    try:
+        os.makedirs(PHONE_LOG_DIR, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        line = f"[{timestamp}] [{device_id}] [{level}] {message}\n"
+
+        with open(PHONE_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+
+        # 写完后检查大小（异步锁在调用方处理）
+        _rotate_phone_log()
+    except Exception as e:
+        logger.warning(f"写手机日志失败: {e}")
 
 
 # WebSocket 连接管理器
@@ -376,6 +419,13 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
                     result = msg.get("result", {})
                     server.report_result(device_id, command_id, result)
                     logger.info(f"收到结果: {command_id} -> {result}")
+
+                elif msg_type == "log":
+                    # 手机端上传的运行日志
+                    log_level = msg.get("level", "INFO")
+                    log_msg = msg.get("message", "")
+                    write_phone_log(device_id, log_level, log_msg)
+                    logger.debug(f"手机日志 [{log_level}]: {log_msg[:80]}")
 
                 elif msg_type == "pong":
                     # 心跳回复

@@ -1,6 +1,8 @@
 import json
 import uuid
 import asyncio
+import re
+import os
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 from enum import Enum
@@ -12,6 +14,187 @@ from loguru import logger
 from app.config import get_settings
 
 settings = get_settings()
+
+# ========== 用户上下文文件管理 ==========
+CONTEXT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "user_contexts")
+MAX_CONTEXT_FILE_SIZE = 1 * 1024 * 1024  # 1MB
+CONTEXT_COMPRESS_THRESHOLD = 0.8  # 80% 触发压缩
+
+COMPRESS_PROMPT = """你是一个对话摘要压缩器。请将以下对话历史压缩为简洁的摘要，保留关键信息：
+
+压缩规则：
+1. 保留用户的基本信息（姓名、偏好、历史订单关键信息）
+2. 保留最近3轮对话的完整内容
+3. 更早的对话只保留关键事实（如：用户询问过什么电影、确定过什么信息）
+4. 用简洁的要点形式输出，不要长篇大论
+5. 输出格式：
+
+## 用户信息
+- 姓名/ID：xxx
+- 偏好：xxx
+- 历史订单摘要：xxx
+
+## 最近对话
+[最近3轮的完整对话]
+
+## 历史关键信息
+- [要点1]
+- [要点2]
+- ...
+
+请压缩以下对话："""
+
+
+class UserContextManager:
+    """管理每个用户的对话上下文文件，支持自动压缩"""
+
+    def __init__(self, anthropic_client: Anthropic = None):
+        os.makedirs(CONTEXT_DIR, exist_ok=True)
+        self.anthropic = anthropic_client
+
+    def _safe_filename(self, user_id: str) -> str:
+        """将 user_id 转为安全文件名"""
+        safe = re.sub(r'[^a-zA-Z0-9_\-\u4e00-\u9fff]', '_', user_id)
+        return safe[:80] if len(safe) > 80 else safe
+
+    def _get_user_file(self, user_id: str) -> str:
+        return os.path.join(CONTEXT_DIR, f"{self._safe_filename(user_id)}.json")
+
+    def _get_file_size(self, user_id: str) -> int:
+        path = self._get_user_file(user_id)
+        if os.path.exists(path):
+            return os.path.getsize(path)
+        return 0
+
+    def _should_compress(self, user_id: str) -> bool:
+        size = self._get_file_size(user_id)
+        return size > MAX_CONTEXT_FILE_SIZE * CONTEXT_COMPRESS_THRESHOLD
+
+    def load_context(self, user_id: str) -> List[Dict]:
+        """加载用户对话上下文"""
+        path = self._get_user_file(user_id)
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+            return []
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"加载用户上下文失败 [{user_id}]: {e}")
+            return []
+
+    def save_context(self, user_id: str, messages: List[Dict]):
+        """保存用户对话上下文"""
+        path = self._get_user_file(user_id)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(messages, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存用户上下文失败 [{user_id}]: {e}")
+
+    def append_message(self, user_id: str, role: str, content: str, metadata: Dict = None):
+        """追加一条消息到用户上下文"""
+        messages = self.load_context(user_id)
+        entry = {
+            "role": role,
+            "content": content,
+            "timestamp": asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else __import__("time").time(),
+        }
+        if metadata:
+            entry["metadata"] = metadata
+        messages.append(entry)
+
+        # 限制单次写入的消息数量（保留最近200条，避免内存问题）
+        if len(messages) > 200:
+            messages = messages[-200:]
+
+        self.save_context(user_id, messages)
+
+    async def compress_context(self, user_id: str) -> bool:
+        """使用 AI 压缩用户上下文"""
+        if not self.anthropic:
+            logger.warning(f"无法压缩上下文 [{user_id}]: 无 AI 客户端")
+            return False
+
+        messages = self.load_context(user_id)
+        if len(messages) < 10:
+            return False  # 消息太少，不值得压缩
+
+        logger.info(f"压缩用户上下文 [{user_id}]: {len(messages)} 条消息, "
+                    f"文件大小 {self._get_file_size(user_id) / 1024:.1f}KB")
+
+        # 构造压缩输入
+        raw_text = ""
+        for msg in messages:
+            role_label = "用户" if msg["role"] == "user" else "助手"
+            content = msg.get("content", "")[:500]
+            raw_text += f"[{role_label}]: {content}\n"
+
+        try:
+            response = self.anthropic.messages.create(
+                model=settings.anthropic_model,
+                max_tokens=1024,
+                system="你是一个专业的对话摘要助手，擅长从对话中提取关键信息并压缩。",
+                messages=[{"role": "user", "content": COMPRESS_PROMPT + "\n\n" + raw_text}]
+            )
+
+            summary = ""
+            for block in response.content:
+                if block.type == "text" and block.text:
+                    summary = block.text
+                    break
+
+            if summary:
+                # 保留压缩摘要 + 最近5条消息
+                recent = messages[-5:] if len(messages) > 5 else messages
+                compressed = [
+                    {"role": "system", "content": f"[上下文摘要]\n{summary}", "is_summary": True}
+                ]
+                compressed.extend(recent)
+                self.save_context(user_id, compressed)
+                logger.info(f"上下文压缩完成 [{user_id}]: "
+                           f"{len(messages)} -> {len(compressed)} 条, "
+                           f"新文件大小 {self._get_file_size(user_id) / 1024:.1f}KB")
+                return True
+
+        except Exception as e:
+            logger.error(f"压缩上下文失败 [{user_id}]: {e}")
+
+        return False
+
+    async def append_and_check(self, user_id: str, role: str, content: str, metadata: Dict = None):
+        """追加消息并自动检查是否需要压缩"""
+        self.append_message(user_id, role, content, metadata)
+
+        if self._should_compress(user_id):
+            await self.compress_context(user_id)
+
+    def get_context_summary(self, user_id: str) -> str:
+        """获取用户上下文的可读摘要（用于注入 system prompt）"""
+        messages = self.load_context(user_id)
+        if not messages:
+            return ""
+
+        parts = []
+        summary_msg = None
+
+        for msg in messages:
+            if msg.get("is_summary"):
+                summary_msg = msg.get("content", "")
+
+        if summary_msg:
+            parts.append(summary_msg)
+            parts.append("\n--- 最近对话 ---")
+
+        # 添加最近10条消息
+        recent = [m for m in messages if not m.get("is_summary")][-10:]
+        for msg in recent:
+            role_label = "用户" if msg["role"] == "user" else "客服"
+            parts.append(f"[{role_label}]: {msg.get('content', '')[:200]}")
+
+        return "\n".join(parts)
 
 
 class MessageSource(Enum):
@@ -72,12 +255,13 @@ class CustomerService:
         self.conversation_prefix = "xianyu:chat:conversation:"
         self.message_queue_key = "xianyu:chat:message_queue"
         self._processing = False
+        self.context_manager = UserContextManager(anthropic_client=self.anthropic)
 
     def _get_conversation_key(self, session_id: str) -> str:
         return f"{self.conversation_prefix}{session_id}"
 
     async def chat(self, user_id: str, message: str, session_id: Optional[str] = None) -> str:
-        """处理用户消息并返回AI回复"""
+        """处理用户消息并返回AI回复（含文件持久化上下文）"""
         if not session_id:
             session_id = str(uuid.uuid4())
 
@@ -85,13 +269,19 @@ class CustomerService:
         history = self.redis.lrange(conversation_key, 0, -1)
         messages = [json.loads(h) for h in history] if history else []
 
+        # 从文件加载用户历史上下文并注入 system prompt
+        context_summary = self.context_manager.get_context_summary(user_id)
+        system_prompt = self.SYSTEM_PROMPT
+        if context_summary:
+            system_prompt = self.SYSTEM_PROMPT + "\n\n## 历史对话上下文\n" + context_summary
+
         messages.append({"role": "user", "content": message})
 
         try:
             response = self.anthropic.messages.create(
                 model=settings.anthropic_model,
                 max_tokens=settings.anthropic_max_tokens,
-                system=self.SYSTEM_PROMPT,
+                system=system_prompt,
                 messages=messages
             )
 
@@ -107,6 +297,10 @@ class CustomerService:
             self.redis.expire(conversation_key, 86400)
 
             self.redis.sadd(f"{self.session_prefix}{user_id}", session_id)
+
+            # 持久化到用户上下文文件（自动检测是否需要压缩）
+            await self.context_manager.append_and_check(user_id, "user", message)
+            await self.context_manager.append_and_check(user_id, "assistant", reply)
 
             logger.info(f"Chat response for user {user_id}: {reply[:50]}...")
             return reply

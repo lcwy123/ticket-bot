@@ -24,15 +24,29 @@ let processingLock = false; // 防止多个通知同时触发导航
 // ========== 日志 ==========
 let TAG = "XianyuAgent";
 
-function log(msg) {
-    if (CONFIG.debugMode) {
-        console.log("[" + TAG + "] " + msg);
+// 发送日志到服务器
+function sendLog(level, msg) {
+    if (ws && isConnected) {
+        try {
+            ws.send(JSON.stringify({
+                type: "log",
+                level: level,
+                message: "[" + TAG + "] " + msg,
+                timestamp: Date.now()
+            }));
+        } catch (e) {}
     }
+}
+
+function log(msg) {
+    console.log("[" + TAG + "] " + msg);
+    sendLog("DEBUG", msg);
 }
 
 function logError(msg) {
     console.error("[" + TAG + "] ERROR: " + msg);
     toast("[" + TAG + "] ERROR: " + msg);
+    sendLog("ERROR", msg);
 }
 
 // ========== 控件树遍历工具 ==========
@@ -40,38 +54,82 @@ let UITree = {
     // 获取当前窗口的根节点
     getRoot: function() {
         try {
-            let root = selector().findOne();
-            return root;
+            // auto.rootInActiveWindow 返回窗口根节点（UiObject），
+            // selector().findOne() 可能只匹配到单个元素而非整棵树
+            var root = auto.rootInActiveWindow;
+            if (root) return root;
+        } catch (e) {}
+        try {
+            return auto.service.getRootInActiveWindow();
+        } catch (e) {}
+        try {
+            return selector().findOne();
+        } catch (e) {}
+        return null;
+    },
+
+    // 判断当前页面是否包含指定文本（用于页面验证）
+    // 如 isOnPage("消息") 检查是否在消息列表，isOnPage("首页") 检查是否在首页
+    isOnPage: function(keyword) {
+        try {
+            let elem = text(keyword).findOne(1000);
+            if (elem) return true;
+            elem = desc(keyword).findOne(500);
+            return elem != null;
         } catch (e) {
-            log("getRoot 失败: " + e);
+            return false;
+        }
+    },
+
+    // 安全获取属性值（兼容 UiObject 和 AccessibilityNodeInfo）
+    _safeProp: function(node, propName, methodName) {
+        try {
+            var v = node[propName];
+            if (typeof v === "function") v = v.call(node);
+            return v;
+        } catch (e) {
+            if (methodName) {
+                try { return node[methodName](); } catch (e2) {}
+            }
             return null;
         }
     },
 
-    // 递归收集所有节点的文本信息（带深度）
-    collectAll: function(node, depth, result) {
-        if (!node || depth > 40) return;
+    _safeChildCount: function(node) {
         try {
-            let info = {
-                depth: depth,
-                text: (node.text() || "").toString(),
-                desc: (node.desc() || "").toString(),
-                className: (node.className() || "").toString(),
-                clickable: node.clickable(),
-                scrollable: node.scrollable(),
-                childCount: node.childCount()
-            };
-            result.push(info);
+            var v = node.childCount;
+            if (typeof v === "function") v = v.call(node);
+            if (typeof v === "number") return v;
+        } catch (e) {}
+        try { return node.getChildCount(); } catch (e) {}
+        return 0;
+    },
 
-            for (let i = 0; i < node.childCount(); i++) {
-                let child = node.child(i);
-                if (child) {
-                    this.collectAll(child, depth + 1, result);
-                }
-            }
-        } catch (e) {
-            // 节点可能已失效，跳过
-        }
+    _safeGetChild: function(node, index) {
+        try { return node.child(index); } catch (e) {}
+        try { return node.getChild(index); } catch (e) {}
+        return null;
+    },
+
+    // 安全获取 bounds 矩形
+    _safeBounds: function(node) {
+        try {
+            var b = node.bounds;
+            if (typeof b === "function") b = b.call(node);
+            if (b && typeof b === "object") return {
+                left: b.left, top: b.top, right: b.right, bottom: b.bottom,
+                cx: (b.left + b.right) / 2, cy: (b.top + b.bottom) / 2
+            };
+        } catch (e) {}
+        try {
+            var rect = node.getBounds();
+            if (typeof rect === "function") rect = rect.call(node);
+            if (rect && typeof rect === "object") return {
+                left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+                cx: (rect.left + rect.right) / 2, cy: (rect.top + rect.bottom) / 2
+            };
+        } catch (e) {}
+        return null;
     },
 
     // 打印当前界面所有文本（调试用）
@@ -79,115 +137,121 @@ let UITree = {
         let root = this.getRoot();
         if (!root) { log("dumpTexts: 无法获取根节点"); return; }
         let all = [];
-        this.collectAll(root, 0, all);
+        this._collectAll(root, 0, all);
         log("====== 界面控件树 (共 " + all.length + " 个节点) ======");
-        for (let i = 0; i < Math.min(all.length, 50); i++) {
-            let node = all[i];
-            let label = node.text || node.desc || "";
-            if (label.length > 0 || node.clickable) {
-                log("  [" + node.depth + "] " + node.className.split(".").pop()
-                    + (node.clickable ? " [可点击]" : "")
-                    + (node.scrollable ? " [可滚动]" : "")
-                    + " text='" + label.substring(0, 40) + "'");
+        for (let i = 0; i < Math.min(all.length, 80); i++) {
+            let n = all[i];
+            let label = n.text || n.desc || "";
+            let extra = "";
+            if (n.text && n.desc && n.text !== n.desc) extra = " desc='" + n.desc.substring(0, 20) + "'";
+            // 打印所有有文本/描述/可点击/可滚动的节点，text为空也显示 className
+            if (label.length > 0 || n.clickable || n.scrollable) {
+                log("  [" + n.depth + "] " + (n.className || "").split(".").pop()
+                    + (n.clickable ? " [可点击]" : "")
+                    + (n.scrollable ? " [可滚动]" : "")
+                    + " text='" + (label.length > 50 ? label.substring(0, 50) : label) + "'"
+                    + extra);
             }
         }
         log("====== 控件树打印完毕 ======");
     },
 
-    // 在控件树中查找 clickable=true 且自身或子节点包含指定文本的节点
-    // 返回第一个匹配的节点（用于点击进入对话）
-    findClickableContaining: function(node, searchText) {
-        if (!node || !searchText) return null;
+    // 内部：递归收集节点信息（纯数据，仅用于 dumpTexts/extractChatMessages）
+    _collectAll: function(node, depth, result) {
+        if (!node || depth > 40) return;
         try {
-            // 检查当前节点的 text/desc 是否匹配
-            let t = (node.text() || "").toString();
-            let d = (node.desc() || "").toString();
-
-            // 如果当前节点 clickable 且文本包含搜索词，返回
-            if (node.clickable() && (t.indexOf(searchText) >= 0 || d.indexOf(searchText) >= 0)) {
-                return node;
-            }
-
-            // 向下递归搜索
-            for (let i = 0; i < node.childCount(); i++) {
-                let child = node.child(i);
-                if (!child) continue;
-                let found = this.findClickableContaining(child, searchText);
-                if (found) return found;
+            result.push({
+                depth: depth,
+                text: (this._safeProp(node, "text") || "").toString(),
+                desc: (this._safeProp(node, "desc", "getContentDescription") || "").toString(),
+                className: (this._safeProp(node, "className", "getClassName") || "").toString(),
+                clickable: this._safeProp(node, "clickable", "isClickable"),
+                scrollable: this._safeProp(node, "scrollable", "isScrollable"),
+                childCount: this._safeChildCount(node),
+                bounds: this._safeBounds(node)
+            });
+            var cc = this._safeChildCount(node);
+            for (var i = 0; i < cc; i++) {
+                var child = this._safeGetChild(node, i);
+                if (child) this._collectAll(child, depth + 1, result);
             }
         } catch (e) {}
-        return null;
     },
 
-    // 查找距离根节点最近的 clickable 祖先（用于点击一个文本后需要点击其外层容器）
+    // 向上查找可点击的祖先节点（返回真实 UiObject）
     findClickableAncestor: function(node) {
         if (!node) return null;
         try {
-            if (node.clickable()) return node;
-            let p = node.parent();
+            if (node.clickable) return node;
+            let p = node.parent;
             if (p) return this.findClickableAncestor(p);
         } catch (e) {}
-        return node; // 找不到就返回自身
+        return node;
     },
 
-    // 在 scrollable 容器内，收集所有 text 不为空的子节点文本
-    collectTextsInScrollable: function(node, result) {
-        if (!node) return;
-        try {
-            let t = (node.text() || "").toString();
-            if (t.length > 0) {
-                result.push(t);
-            }
-            for (let i = 0; i < node.childCount(); i++) {
-                let child = node.child(i);
-                if (child) {
-                    this.collectTextsInScrollable(child, result);
-                }
-            }
-        } catch (e) {}
-    },
-
-    // 从聊天界面提取消息内容
-    // 策略：找到可滚动的消息列表 → 收集所有文本 → 过滤出真正的消息
+    // 从聊天界面提取消息文本
     extractChatMessages: function() {
         let root = this.getRoot();
         if (!root) return [];
 
-        // 收集所有文本节点
-        let allNodes = [];
-        this.collectAll(root, 0, allNodes);
+        let all = [];
+        this._collectAll(root, 0, all);
 
-        // 过滤策略：
-        // 1. 跳过深度太浅的（toolbar 区域，通常 depth < 5）
-        // 2. 跳过 editable 节点（输入框）
-        // 3. 跳过过短的文本（时间戳、数字角标等，长度 <= 3）
-        // 4. 跳过明显的 UI 固定文本
-        let uiKeywords = [
-            "闲鱼", "消息", "搜索", "发布", "我的", "首页", "输入",
+        var uiKeywords = [
+            "闲鱼", "消息", "搜索", "发布", "我的", "首页",
             "发送", "图片", "拍照", "语音", "表情", "红包", "转账",
             "关注", "粉丝", "动态", "卖出", "买到", "评价",
-            "以上为历史消息", "系统消息", "加载更多"
+            "以上为历史消息", "系统消息", "加载更多",
+            "输入", "说点什么", "文明发言", "请输入",
+            "头像", "返回", "更多", "更多选择", "立即购买",
+            "语音按钮", "表情按钮", "商品图片", "商品信息",
+            "想跟TA说点什么"
         ];
 
-        let messages = [];
-        for (let i = 0; i < allNodes.length; i++) {
-            let node = allNodes[i];
-            let t = node.text;
+        // 计算屏幕上边界（导航栏下方）和下边界（输入区上方）
+        var screenBottom = 0;
+        var screenTop = 9999;
+        for (var si = 0; si < all.length; si++) {
+            if (all[si].bounds) {
+                if (all[si].bounds.bottom > screenBottom) screenBottom = all[si].bounds.bottom;
+                if (all[si].bounds.top < screenTop) screenTop = all[si].bounds.top;
+            }
+        }
+        var topCutoff = screenTop + (screenBottom - screenTop) * 0.12;    // 顶部12% = 导航栏
+        var bottomCutoff = screenBottom - (screenBottom - screenTop) * 0.15; // 底部15% = 输入区
 
-            // 跳过空文本
-            if (!t || t.length === 0) continue;
-            // 跳过太短的（时间、角标）
-            if (t.length <= 2 && /^[\d:：\-/\s]+$/.test(t)) continue;
-            // 跳过纯数字
-            if (/^\d+$/.test(t) && t.length <= 3) continue;
-            // 跳过 UI 关键词
-            let isUI = false;
-            for (let k = 0; k < uiKeywords.length; k++) {
-                if (t === uiKeywords[k]) { isUI = true; break; }
+        var messages = [];
+        for (var j = 0; j < all.length; j++) {
+            var t = all[j].text || all[j].desc || "";
+            if (t.length < 2) continue;
+            // 纯数字且≤3位（时间戳）
+            if (t.length <= 3 && /^\d+$/.test(t)) continue;
+            // 时间/日期格式
+            if (/^[\d]{1,2}:[\d]{2}$/.test(t.trim())) continue;
+            if (/^[\d]{4}[-/][\d]{2}[-/][\d]{2}$/.test(t.trim())) continue;
+            if (/^[\d]{2}[-/][\d]{2}$/.test(t.trim())) continue;
+            // 系统标签
+            if (t === "红点提醒" || t === "通知消息" || t === "互动消息" || t === "热门活动") continue;
+            if (t.indexOf("未读") >= 0) continue;
+
+            // 精确匹配 UI 关键词则跳过
+            var isUI = false;
+            for (var k = 0; k < uiKeywords.length; k++) {
+                if (t === uiKeywords[k] || (uiKeywords[k].length >= 3 && t.indexOf(uiKeywords[k]) >= 0)) {
+                    isUI = true;
+                    break;
+                }
             }
             if (isUI) continue;
-            // 跳过 toolbar 区域（深度太浅）
-            if (node.depth < 6 && node.className.indexOf("Toolbar") < 0) continue;
+
+            // 位置过滤：只在屏幕中间区域（排除顶部导航栏和底部输入区）
+            if (all[j].bounds) {
+                var b = all[j].bounds;
+                if (b.top < topCutoff || b.top > bottomCutoff) continue;
+            }
+
+            // 聊天消息在较深层级
+            if (all[j].depth < 10) continue;
 
             messages.push(t);
         }
@@ -199,187 +263,264 @@ let UITree = {
 // ========== 闲鱼导航流程 ==========
 let XianyuNavigator = {
 
-    // 确保闲鱼在前台
+    // 确保闲鱼在前台，且主页已完全加载（广告结束后）
     ensureAppForeground: function() {
         log("[导航] 启动闲鱼...");
         launch("com.taobao.idlefish");
-        sleep(2500);
+        sleep(2000);
 
-        for (let retry = 0; retry < 3; retry++) {
-            let pkg = currentPackage();
+        // Step 1: 确保 APP 已在前台
+        var appReady = false;
+        for (var retry = 0; retry < 5; retry++) {
+            var pkg = currentPackage();
             log("[导航] 当前包名: " + pkg);
-            if (pkg === XIANYU_PACKAGE) return true;
+            if (pkg === XIANYU_PACKAGE) {
+                appReady = true;
+                break;
+            }
             sleep(2000);
         }
-        logError("[导航] 闲鱼未能启动到前台");
-        return false;
-    },
-
-    // 进入消息列表
-    goToMessageList: function() {
-        log("[导航] 进入消息列表...");
-
-        // 策略 1: 通过 desc="消息" 查找（最可靠）
-        let tab = desc("消息").findOne(3000);
-        if (tab) {
-            log("[导航] 策略1: desc='消息' 找到，点击");
-            tab.click();
-            sleep(2000);
-            return true;
+        if (!appReady) {
+            logError("[导航] 闲鱼未能启动到前台");
+            return false;
         }
 
-        // 策略 2: 通过 text="消息" 查找
-        tab = text("消息").findOne(2000);
-        if (tab) {
-            log("[导航] 策略2: text='消息' 找到，点击");
-            tab.click();
-            sleep(2000);
-            return true;
-        }
+        // Step 2: 等待主页加载完成（开屏广告可能持续几秒）
+        // 主页特征：底部tab栏包含"首页"/"消息"/"我的"等，或"卖闲置"大按钮
+        log("[导航] 等待主页加载...");
+        for (var w = 0; w < 8; w++) {
+            // 检查主页特征元素是否出现
+            var sellBtn = text("卖闲置").findOne(1000);
+            // 或者检查底部导航栏
+            var bottomNav = text("消息").findOne(1000);
+            var myTab = text("我的").findOne(1000);
 
-        // 策略 3: 遍历控件树，找 clickable 且含"消息"文本的元素
-        let root = UITree.getRoot();
-        if (root) {
-            let found = UITree.findClickableContaining(root, "消息");
-            if (found) {
-                log("[导航] 策略3: 控件树中找到含'消息'的可点击元素");
-                found.click();
-                sleep(2000);
+            if (sellBtn || (bottomNav && myTab)) {
+                log("[导航] 主页已加载 (等待" + (w + 1) + "秒)");
                 return true;
             }
+
+            // 如果还在广告页面，尝试跳过
+            var skipBtn = textContains("跳过").findOne(500);
+            if (skipBtn) {
+                log("[导航] 检测到广告跳过按钮，点击...");
+                try { skipBtn.click(); } catch (e) {}
+            }
+
+            sleep(1000);
         }
 
-        // 策略 4: 坐标点击（底部导航栏"消息"位置，通常是第 2 个 tab）
-        // 1080x2400 屏幕，底部导航约在 y=2200-2350，"消息"约在 x=200-350
-        log("[导航] 策略4: 尝试坐标点击底部消息tab...");
-        click(270, 2280);
-        sleep(2500);
-
-        // 验证是否进入了消息列表（检查界面是否有"消息"标题或会话列表特征）
-        root = UITree.getRoot();
+        // 最后再试一次：用控件树检查
+        var root = UITree.getRoot();
         if (root) {
-            let all = [];
-            UITree.collectAll(root, 0, all);
-            for (let i = 0; i < all.length; i++) {
-                let t = all[i].text;
-                if (t && (t === "消息" || t.indexOf("聊天") >= 0 || t.indexOf("会话") >= 0)) {
-                    log("[导航] 策略4: 验证成功，已进入消息列表");
+            var all = [];
+            UITree._collectAll(root, 0, all);
+            for (var i = 0; i < all.length; i++) {
+                var t = all[i].text || "";
+                if (t === "卖闲置" || t === "消息" || t === "我的") {
+                    log("[导航] 主页已加载（控件树检测）");
                     return true;
                 }
             }
         }
 
-        logError("[导航] 所有策略均未能进入消息列表");
+        log("[导航] 主页可能未完全加载，继续尝试...");
+        return true; // 继续尝试，不阻塞流程
+    },
+
+    // 验证当前是否在指定页面（检查左上角标题）
+    verifyPage: function(pageTitle) {
+        let found = text(pageTitle).findOne(2000);
+        if (found) {
+            log("[验证] 已在" + pageTitle + "页面");
+            return true;
+        }
+        found = desc(pageTitle).findOne(500);
+        if (found) {
+            log("[验证] 已在" + pageTitle + "页面 (desc)");
+            return true;
+        }
+        log("[验证] 未检测到'" + pageTitle + "'，可能不在目标页面");
         return false;
     },
 
-    // 在消息列表中匹配并找到目标会话
+    // 进入消息列表（坐标点击 + 页面验证）
+    goToMessageList: function() {
+        for (let retry = 0; retry < 3; retry++) {
+            log("[导航] 坐标点击消息tab (770, 2270)，第" + (retry + 1) + "次...");
+            click(770, 2270);
+            sleep(2500);
+
+            if (this.verifyPage("消息")) {
+                return true;
+            }
+            log("[导航] 未进入消息列表，重试...");
+        }
+        logError("[导航] 多次重试后仍未能进入消息列表");
+        return false;
+    },
+
+    // 在消息列表中滚动加载更多会话
+    scrollMessageList: function() {
+        log("[导航] 滚动消息列表加载更多...");
+        // 在消息列表区域从下往上滑动
+        swipe(540, 1600, 540, 800, 400);
+        sleep(1500);
+    },
+
+    // 验证是否在目标用户的会话页面（而非消息列表）
+    verifyConversation: function(userName) {
+        log("[验证] 检查是否已进入会话...");
+        sleep(800);
+
+        var root = UITree.getRoot();
+        if (!root) return false;
+        var all = [];
+        UITree._collectAll(root, 0, all);
+
+        // 如果在消息列表，会有"清除未读"或"搜索聊天记录"
+        var hasClearUnread = false;
+        var hasSearchBar = false;
+        var hasInputField = false;
+        var hasUserName = false;
+
+        for (var i = 0; i < all.length; i++) {
+            var t = all[i].text || all[i].desc || "";
+            if (t === "清除未读" || t === "清除未读消息") hasClearUnread = true;
+            if (t.indexOf("搜索聊天记录") >= 0) hasSearchBar = true;
+            if (t.indexOf("输入") >= 0 || t.indexOf("说点什么") >= 0 || t === "请输入消息") hasInputField = true;
+            if (userName && t.indexOf(userName) >= 0 && all[i].depth < 12) hasUserName = true;
+        }
+
+        // 在消息列表的标志：有"清除未读"且有搜索栏
+        if (hasClearUnread && hasSearchBar) {
+            log("[验证] 仍在消息列表页面，未进入会话");
+            return false;
+        }
+
+        // 在会话页面的标志：有输入框，且深度较浅处有用户名
+        if (hasInputField || hasUserName) {
+            log("[验证] 已进入会话页面" + (hasUserName ? " (" + userName + ")" : ""));
+            return true;
+        }
+
+        // 有输入框但没用户名也算进入会话（可能用户名在更浅层）
+        if (hasInputField) {
+            log("[验证] 检测到输入框，认为已进入会话");
+            return true;
+        }
+
+        log("[验证] 无法确定当前页面状态");
+        return false;
+    },
+
+    // 在消息列表中匹配并进入目标会话
+    // 先滚动加载更多，再在控件树数据中匹配文本，点击后验证
     findConversation: function(userName) {
         log("[导航] 在消息列表中匹配会话: " + userName);
 
-        // 先 dump 当前界面文本用于调试
+        // 获取完整控件树数据（最新消息在上方，不需要滚动）
+        var root = UITree.getRoot();
+        if (!root) {
+            logError("[导航] 无法获取控件树");
+            return null;
+        }
+        var all = [];
+        UITree._collectAll(root, 0, all);
+
+        // 调试：打印当前界面
         UITree.dumpTexts();
 
-        let root = UITree.getRoot();
-        if (!root) { logError("[导航] 无法获取消息列表根节点"); return null; }
+        // 在已采集的树数据中匹配 userName
+        var matchIdx = -1;
 
-        // 收集所有节点
-        let allNodes = [];
-        UITree.collectAll(root, 0, allNodes);
-
-        // 策略 1: 在所有节点中精确匹配 userName
-        let candidates = [];
-        for (let i = 0; i < allNodes.length; i++) {
-            let node = allNodes[i];
-            let t = node.text;
-            if (t && t === userName) {
-                // 找到精确匹配的文本节点，取其 clickable 祖先
-                candidates.push({ node: allNodes[i], type: "exact", score: 100 });
+        // 策略 1: 精确匹配
+        for (var i = 0; i < all.length; i++) {
+            if (all[i].text === userName || all[i].desc === userName) {
+                matchIdx = i;
+                log("[匹配] 策略1 精确匹配: [" + all[i].depth + "] " + (all[i].text || all[i].desc));
+                break;
             }
         }
 
         // 策略 2: 包含匹配
-        if (candidates.length === 0) {
-            for (let i = 0; i < allNodes.length; i++) {
-                let node = allNodes[i];
-                let t = node.text;
-                if (t && t.length >= userName.length && t.indexOf(userName) >= 0) {
-                    candidates.push({ node: allNodes[i], type: "contains", score: 80 });
-                }
-            }
-        }
-
-        // 策略 3: 模糊匹配（用户名可能被截断或有前后缀）
-        if (candidates.length === 0 && userName.length >= 3) {
-            let shortName = userName.substring(0, Math.floor(userName.length / 2));
-            for (let i = 0; i < allNodes.length; i++) {
-                let node = allNodes[i];
-                let t = node.text;
-                if (t && t.indexOf(shortName) >= 0 && t.length > 2) {
-                    candidates.push({ node: allNodes[i], type: "partial", score: 50 });
-                }
-            }
-        }
-
-        // 策略 4: 尝试匹配通知内容中的关键词
-        if (candidates.length === 0) {
-            log("[导航] 文本匹配失败，尝试找第一条未读会话...");
-            // 通常新消息在最上面，找第一个看起来像用户名的可点击行
-            for (let i = 0; i < allNodes.length; i++) {
-                let node = allNodes[i];
-                if (node.clickable && node.depth >= 6 && node.childCount >= 2) {
-                    candidates.push({ node: allNodes[i], type: "firstClickable", score: 10 });
+        if (matchIdx < 0) {
+            for (var k = 0; k < all.length; k++) {
+                var t = all[k].text || all[k].desc || "";
+                if (t.indexOf(userName) >= 0) {
+                    matchIdx = k;
+                    log("[匹配] 策略2 包含匹配: [" + all[k].depth + "] " + t);
                     break;
                 }
             }
         }
 
-        if (candidates.length === 0) {
-            logError("[导航] 未找到任何匹配的会话");
-            return null;
+        // 策略 3: 模糊匹配（前半部分）
+        if (matchIdx < 0 && userName.length >= 3) {
+            var shortName = userName.substring(0, Math.floor(userName.length / 2));
+            for (var j = 0; j < all.length; j++) {
+                var t2 = all[j].text || all[j].desc || "";
+                if (t2.indexOf(shortName) >= 0 && t2.length > 2) {
+                    matchIdx = j;
+                    log("[匹配] 策略3 模糊匹配: [" + all[j].depth + "] " + t2);
+                    break;
+                }
+            }
         }
 
-        // 选最佳候选，找到其可点击祖先
-        let best = candidates[0];
-        log("[导航] 匹配结果: type=" + best.type + ", score=" + best.score + ", text='" + best.node.text + "'");
-
-        // 从匹配节点向上找到可点击的父节点
-        let target = best.node;
-        try {
-            for (let up = 0; up < 5; up++) {
-                if (target.clickable()) break;
-                let p = target.parent();
-                if (!p) break;
-                target = p;
-            }
-        } catch (e) {}
-
-        if (!target.clickable()) {
-            // 如果还是不可点击，找最近的可点击兄弟/祖先
-            log("[导航] 匹配节点不可点击，搜索可点击祖先...");
-            // 直接在节点树上找
-            for (let i = 0; i < allNodes.length; i++) {
-                if (allNodes[i].clickable && allNodes[i].depth < best.node.depth) {
-                    // 检查这个可点击节点是否包含匹配文本
-                    let checkText = allNodes[i].text;
-                    if (checkText && checkText.indexOf(userName) < 0 && checkText.indexOf("消息") < 0) {
-                        // 可能是容器，直接用坐标点击
-                        let bounds = target.bounds();
-                        if (bounds) {
-                            click(bounds.centerX(), bounds.centerY());
-                            sleep(2000);
-                            return true;
-                        }
+        // 如果匹配到了，向上查找可点击祖先并点击
+        if (matchIdx >= 0) {
+            var targetDepth = all[matchIdx].depth;
+            // 从匹配位置往前搜索可点击祖先
+            for (var p = matchIdx - 1; p >= 0; p--) {
+                if (all[p].clickable && all[p].depth < targetDepth) {
+                    var b = all[p].bounds;
+                    if (b) {
+                        log("[匹配] 找到可点击祖先 depth=" + all[p].depth + " (" + b.cx + "," + b.cy + ")");
+                        click(b.cx, b.cy);
+                        sleep(2500);
+                        // 验证是否进入会话
+                        if (this.verifyConversation(userName)) return true;
+                        // 没进入，按返回重试
+                        log("[匹配] 未进入目标会话，返回重试...");
+                        back();
+                        sleep(1000);
                     }
                 }
             }
-            return null;
+            // 如果匹配节点本身可点击
+            if (all[matchIdx].clickable) {
+                var mb = all[matchIdx].bounds;
+                if (mb) {
+                    log("[匹配] 匹配节点自身可点击: (" + mb.cx + "," + mb.cy + ")");
+                    click(mb.cx, mb.cy);
+                    sleep(2500);
+                    if (this.verifyConversation(userName)) return true;
+                    back();
+                    sleep(1000);
+                }
+            }
         }
 
-        log("[导航] 点击目标会话: clickable=" + target.clickable() + ", text='" + (target.text() || "") + "'");
-        target.click();
-        sleep(2000);
-        return true;
+        // 策略 4: 兜底 — 逐个尝试会话行，验证是否进入目标会话
+        log("[匹配] 文本匹配失败，逐个尝试会话行...");
+        for (var x = 0; x < all.length; x++) {
+            if (all[x].clickable && all[x].depth >= 4 && all[x].childCount >= 1) {
+                var bx = all[x].bounds;
+                if (bx && bx.cy > 200) {
+                    log("[匹配] 策略4 尝试: depth=" + all[x].depth + " (" + bx.cx + "," + bx.cy + ")");
+                    click(bx.cx, bx.cy);
+                    sleep(2500);
+                    if (this.verifyConversation(userName)) return true;
+                    // 返回消息列表
+                    back();
+                    sleep(1000);
+                }
+            }
+        }
+
+        logError("[导航] 未找到匹配的会话");
+        return null;
     },
 
     // 从当前聊天界面提取完整消息
@@ -387,28 +528,43 @@ let XianyuNavigator = {
         log("[导航] 提取聊天消息...");
         sleep(1000); // 等待消息加载
 
+        // 先验证在会话页面（不是消息列表）
+        var root = UITree.getRoot();
+        if (!root) return null;
+        var all = [];
+        UITree._collectAll(root, 0, all);
+
+        // 检查是否仍在消息列表
+        for (var ci = 0; ci < all.length; ci++) {
+            var ct = all[ci].text || "";
+            if (ct === "清除未读" || ct.indexOf("搜索聊天记录") >= 0) {
+                log("[导航] 仍在消息列表，放弃提取");
+                return null;
+            }
+        }
+
         UITree.dumpTexts();
 
-        let messages = UITree.extractChatMessages();
+        var messages = UITree.extractChatMessages();
         log("[导航] 提取到 " + messages.length + " 条候选消息");
 
         if (messages.length > 0) {
-            // 去重并取最后几条作为新消息
-            let unique = [];
-            for (let i = 0; i < messages.length; i++) {
-                if (unique.indexOf(messages[i]) < 0) {
-                    unique.push(messages[i]);
+            // 去重
+            var unique = [];
+            for (var u = 0; u < messages.length; u++) {
+                if (unique.indexOf(messages[u]) < 0) {
+                    unique.push(messages[u]);
                 }
             }
             log("[导航] 去重后 " + unique.length + " 条消息");
 
-            // 打印前 5 条
-            for (let i = 0; i < Math.min(unique.length, 5); i++) {
-                log("[导航]   msg[" + i + "]: " + unique[i].substring(0, 60));
+            // 打印最近 5 条
+            for (var p = 0; p < Math.min(unique.length, 5); p++) {
+                log("[导航]   msg[" + p + "]: " + unique[p].substring(0, 60));
             }
 
-            // 返回最后一条作为新消息（最新消息通常在列表末尾）
-            let lastMsg = unique[unique.length - 1];
+            // 返回最后一条作为最新消息
+            var lastMsg = unique[unique.length - 1];
             if (lastMsg && lastMsg.length > 1) {
                 return lastMsg;
             }
@@ -827,13 +983,21 @@ function executeCommand(cmd) {
     }
 }
 
+// ========== 辅助函数 ==========
+function repeatStr(s, n) {
+    var r = "";
+    for (var i = 0; i < n; i++) r += s;
+    return r;
+}
+
 // ========== 启动 ==========
 function main() {
-    log("=".repeat(50));
+    var sep = repeatStr("=", 50);
+    log(sep);
     log("闲鱼 Agent WebSocket 客户端 (AutoJS6)");
     log("服务器: " + CONFIG.wsUrl);
     log("通知监控: " + (CONFIG.enableNotificationMonitor ? "启用" : "禁用"));
-    log("=".repeat(50));
+    log(sep);
 
     toast("正在连接服务器...");
     connect();
@@ -841,7 +1005,7 @@ function main() {
     if (CONFIG.enableNotificationMonitor) {
         threads.start(function() {
             sleep(2000);
-            let started = startNotificationListener();
+            var started = startNotificationListener();
             if (started) {
                 log("消息通知监控已启动");
                 toast("消息通知监控已启动");
@@ -863,4 +1027,9 @@ function main() {
     log("脚本已就绪");
 }
 
-main();
+try {
+    main();
+} catch (e) {
+    console.error("[XianyuAgent] 启动失败: " + e);
+    toast("[XianyuAgent] 启动失败: " + e);
+}
