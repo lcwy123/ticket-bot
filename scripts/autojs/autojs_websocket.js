@@ -264,68 +264,194 @@ let UITree = {
 let XianyuNavigator = {
 
     // 确保闲鱼在前台，且主页已完全加载（广告结束后）
+    // 返回值: "home" | "message_list" | "conversation" | "unknown"
     ensureAppForeground: function() {
         log("[导航] 启动闲鱼...");
-        launch("com.taobao.idlefish");
+
+        // 多策略启动（后台线程需要 FLAG_ACTIVITY_NEW_TASK）
+        var launched = false;
+        try {
+            importClass(android.content.Intent);
+            var intent = new Intent(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_LAUNCHER);
+            intent.setPackage(XIANYU_PACKAGE);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+            launched = true;
+            log("[导航] 通过 Intent 启动闲鱼");
+        } catch (e) {
+            log("[导航] Intent 启动失败: " + e);
+        }
+        if (!launched) {
+            try {
+                launch(XIANYU_PACKAGE);
+                log("[导航] 通过 launch() 启动闲鱼");
+            } catch (e2) {
+                log("[导航] launch() 也失败: " + e2);
+            }
+        }
         sleep(2000);
 
         // Step 1: 确保 APP 已在前台
         var appReady = false;
-        for (var retry = 0; retry < 5; retry++) {
+        for (var retry = 0; retry < 6; retry++) {
             var pkg = currentPackage();
             log("[导航] 当前包名: " + pkg);
             if (pkg === XIANYU_PACKAGE) {
                 appReady = true;
                 break;
             }
+            // 如果卡在 AutoJS6 或桌面，重试（先 home 再 launch）
+            if (pkg === "org.autojs.autojs6" || pkg === "com.miui.home") {
+                try {
+                    launch(XIANYU_PACKAGE);
+                } catch (e2) {
+                    try {
+                        importClass(android.content.Intent);
+                        var intent2 = new Intent(Intent.ACTION_MAIN);
+                        intent2.addCategory(Intent.CATEGORY_LAUNCHER);
+                        intent2.setPackage(XIANYU_PACKAGE);
+                        intent2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(intent2);
+                    } catch (e3) {}
+                }
+            }
             sleep(2000);
         }
         if (!appReady) {
             logError("[导航] 闲鱼未能启动到前台");
-            return false;
+            return "unknown";
         }
 
-        // Step 2: 等待主页加载完成（开屏广告可能持续几秒）
-        // 主页特征：底部tab栏包含"首页"/"消息"/"我的"等，或"卖闲置"大按钮
+        // Step 2: 检测当前页面状态
+        var pageState = this.detectPageState();
+        if (pageState !== "unknown") {
+            log("[导航] 当前页面状态: " + pageState);
+            return pageState;
+        }
+
+        // Step 3: 等待主页加载完成
         log("[导航] 等待主页加载...");
         for (var w = 0; w < 8; w++) {
-            // 检查主页特征元素是否出现
             var sellBtn = text("卖闲置").findOne(1000);
-            // 或者检查底部导航栏
             var bottomNav = text("消息").findOne(1000);
             var myTab = text("我的").findOne(1000);
 
             if (sellBtn || (bottomNav && myTab)) {
                 log("[导航] 主页已加载 (等待" + (w + 1) + "秒)");
-                return true;
+                return "home";
             }
 
-            // 如果还在广告页面，尝试跳过
             var skipBtn = textContains("跳过").findOne(500);
             if (skipBtn) {
                 log("[导航] 检测到广告跳过按钮，点击...");
                 try { skipBtn.click(); } catch (e) {}
             }
 
+            // 可能直接进入了消息列表或对话页
+            pageState = this.detectPageState();
+            if (pageState !== "unknown") {
+                log("[导航] 页面已就绪: " + pageState);
+                return pageState;
+            }
+
             sleep(1000);
         }
 
-        // 最后再试一次：用控件树检查
+        // 最后试一次控件树检测
+        pageState = this.detectPageState();
+        if (pageState !== "unknown") return pageState;
+
+        log("[导航] 主页可能未完全加载，继续尝试...");
+        return "home"; // 继续尝试
+    },
+
+    // 检测当前页面状态
+    detectPageState: function() {
         var root = UITree.getRoot();
-        if (root) {
-            var all = [];
-            UITree._collectAll(root, 0, all);
-            for (var i = 0; i < all.length; i++) {
-                var t = all[i].text || "";
-                if (t === "卖闲置" || t === "消息" || t === "我的") {
-                    log("[导航] 主页已加载（控件树检测）");
-                    return true;
+        if (!root) return "unknown";
+        var all = [];
+        UITree._collectAll(root, 0, all);
+
+        var hasConversationUser = false;
+        var hasInputField = false;
+        var hasMessageList = false;
+        var hasHomeTab = false;
+        var topLeftText = "";
+
+        for (var i = 0; i < all.length; i++) {
+            var t = all[i].text || "";
+            var d = all[i].desc || "";
+
+            // 检测对话页特征：左上角返回按钮（表示在子页面）
+            if (t === "返回" || d === "返回") {
+                // 返回按钮附近的文本通常是用户昵称（浅层同级节点）
+            }
+
+            // 检测输入框（对话页特征）
+            if (t.indexOf("想跟TA说点什么") >= 0 || t.indexOf("说点什么") >= 0 || t.indexOf("请输入") >= 0) {
+                hasInputField = true;
+            }
+
+            // 检测消息列表页特征
+            if (t === "清除未读" || t.indexOf("搜索聊天记录") >= 0) {
+                hasMessageList = true;
+            }
+
+            // 检测主页特征
+            if (t === "卖闲置" || t === "首页" || t === "南京") {
+                hasHomeTab = true;
+            }
+
+            // 抓取左上角可能的用户昵称（浅层、有文本、在 "返回" 附近）
+            if (all[i].depth <= 12 && t.length >= 2 && t !== "返回" && t !== "更多" && t.indexOf("会员名") < 0) {
+                // 找到返回按钮的同级用户昵称
+                for (var j = 0; j < all.length; j++) {
+                    if ((all[j].text === "返回" || all[j].desc === "返回") && Math.abs(all[j].depth - all[i].depth) <= 1) {
+                        if (t !== "消息" && t !== "首页" && t !== "我的" && t !== "南京" && t !== "闲鱼") {
+                            topLeftText = t;
+                            hasConversationUser = true;
+                        }
+                    }
                 }
             }
         }
 
-        log("[导航] 主页可能未完全加载，继续尝试...");
-        return true; // 继续尝试，不阻塞流程
+        if (hasInputField && hasConversationUser) return "conversation";
+        if (hasInputField) return "conversation";
+        if (hasMessageList) return "message_list";
+        if (hasHomeTab) return "home";
+        return "unknown";
+    },
+
+    // 获取当前对话页左上角的用户昵称
+    getConversationUser: function() {
+        var root = UITree.getRoot();
+        if (!root) return null;
+        var all = [];
+        UITree._collectAll(root, 0, all);
+
+        var backIdx = -1;
+        for (var i = 0; i < all.length; i++) {
+            if ((all[i].text === "返回" || all[i].desc === "返回") && all[i].depth <= 12) {
+                backIdx = i;
+                break;
+            }
+        }
+        if (backIdx < 0) return null;
+
+        // 在返回按钮的深度附近找用户昵称
+        var backDepth = all[backIdx].depth;
+        for (var j = 0; j < all.length; j++) {
+            var t = all[j].text || "";
+            if (Math.abs(all[j].depth - backDepth) <= 2 && t.length >= 2 && t.length <= 30
+                && t !== "返回" && t !== "更多" && t !== "消息" && t !== "首页"
+                && t.indexOf("会员名") < 0 && t.indexOf("说点什么") < 0
+                && t.indexOf("图片") < 0 && t.indexOf("按钮") < 0) {
+                return t;
+            }
+        }
+        return null;
     },
 
     // 验证当前是否在指定页面（检查左上角标题）
@@ -344,14 +470,57 @@ let XianyuNavigator = {
         return false;
     },
 
-    // 进入消息列表（坐标点击 + 页面验证）
+    // 进入消息列表（通过无障碍树找到"消息"tab并点击）
     goToMessageList: function() {
         for (let retry = 0; retry < 3; retry++) {
-            log("[导航] 坐标点击消息tab (770, 2270)，第" + (retry + 1) + "次...");
-            click(770, 2270);
+            log("[导航] 尝试进入消息列表，第" + (retry + 1) + "次...");
+
+            // 方法A: 通过控件树找到底部导航栏的"消息"tab
+            var root = UITree.getRoot();
+            if (root) {
+                var all = [];
+                UITree._collectAll(root, 0, all);
+                // 找文本为"消息"的可点击元素（通常在底部导航栏）
+                var found = false;
+                for (var i = 0; i < all.length; i++) {
+                    if ((all[i].text === "消息" || all[i].desc === "消息") && all[i].clickable && all[i].bounds) {
+                        log("[导航] 找到'消息'tab: at (" + all[i].bounds.cx + "," + all[i].bounds.cy + ")");
+                        click(all[i].bounds.cx, all[i].bounds.cy);
+                        found = true;
+                        break;
+                    }
+                }
+                // 如果没找到可点击的，尝试找非可点击但有文本的（可能是父节点不可点击）
+                if (!found) {
+                    for (var j = 0; j < all.length; j++) {
+                        if ((all[j].text === "消息" || all[j].desc === "消息") && all[j].bounds) {
+                            log("[导航] 找到'消息'文本: at (" + all[j].bounds.cx + "," + all[j].bounds.cy + ") depth=" + all[j].depth);
+                            click(all[j].bounds.cx, all[j].bounds.cy);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    // 回退到坐标点击（屏幕底部导航栏中间偏左位置）
+                    var dw = device.width;
+                    var dh = device.height;
+                    var msgX = dw * 0.25;  // 消息tab大约在底部1/4处
+                    var msgY = dh - 80;    // 底部导航栏高度约80px
+                    log("[导航] 控件树未找到'消息'，坐标点击 (" + msgX + "," + msgY + ")");
+                    click(msgX, msgY);
+                }
+            } else {
+                // 无法获取控件树，坐标点击
+                var dw2 = device.width;
+                var dh2 = device.height;
+                click(dw2 * 0.25, dh2 - 80);
+            }
+
             sleep(2500);
 
             if (this.verifyPage("消息")) {
+                log("[导航] 已进入消息列表");
                 return true;
             }
             log("[导航] 未进入消息列表，重试...");
@@ -575,6 +744,218 @@ let XianyuNavigator = {
 };
 
 // ========== 发送消息到服务器 ==========
+// ========== 回复相关全局变量 ==========
+let pendingReplyText = null;
+let waitingForReply = false;
+let lastProcessedUser = null;  // 最近处理的用户名，用于延迟回复的重新导航
+
+// ========== 发送回复到闲鱼聊天 ==========
+function sendReply(replyText) {
+    log("发送回复: " + (replyText || "").substring(0, 40));
+
+    try {
+        if (!findInputArea()) {
+            logError("sendReply: 未检测到输入框，可能不在聊天页面，放弃发送");
+            return;
+        }
+
+        // 1. 点击输入框
+        var inputArea = textContains("说点什么").findOne(2000)
+                     || descContains("说点什么").findOne(500)
+                     || textContains("请输入").findOne(1000);
+        if (inputArea) {
+            inputArea.click();
+            log("点击输入区域");
+        } else {
+            click(device.width * 0.5, device.height - 120);
+            log("坐标点击输入区域");
+        }
+        sleep(600);
+
+        // 2. setText 填入内容
+        try {
+            setText(replyText);
+            log("setText 完成");
+        } catch (e) {
+            log("setText 失败: " + e + ", 尝试 shell input");
+            try {
+                var escaped = replyText.replace(/"/g, '\\"').replace(/'/g, "'\\''");
+                shell('input text "' + escaped + '"', true);
+                log("shell input 完成");
+            } catch (e2) {
+                logError("shell input 也失败: " + e2);
+                return;
+            }
+        }
+        sleep(600);
+
+        // 3. 点击发送按钮
+        var sendBtn = text("发送").findOne(2000)
+                   || desc("发送").findOne(1000)
+                   || textContains("发送").findOne(1000);
+        if (sendBtn) {
+            sendBtn.click();
+            log("已点击发送按钮");
+        } else {
+            // 兜底：右下角坐标
+            log("未找到'发送'按钮，坐标点击右下角");
+            click(device.width - 80, device.height - 80);
+        }
+
+        log("回复发送完成");
+
+    } catch (e) {
+        logError("发送回复异常: " + e);
+    }
+}
+
+// 查找输入区域（聊天页特有的 placeholder 文本）
+function findInputArea() {
+    try {
+        var root = UITree.getRoot();
+        if (!root) return false;
+        var all = [];
+        UITree._collectAll(root, 0, all);
+        for (var i = 0; i < all.length; i++) {
+            var t = (all[i].text || all[i].desc || "");
+            if (t.indexOf("说点什么") >= 0 || t.indexOf("请输入") >= 0) return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
+// 等待发送按钮出现（输入文本后 "+" 按钮变为 "发送"）
+function waitForSendButton() {
+    var w = device.width;
+    var h = device.height;
+    for (var attempt = 0; attempt < 8; attempt++) {
+        sleep(500);
+        try {
+            var root = UITree.getRoot();
+            if (!root) continue;
+            var all = [];
+            UITree._collectAll(root, 0, all);
+
+            // 打印底部区域控件（调试用）
+            if (attempt === 0) {
+                log("底部控件扫描:");
+                for (var di = 0; di < all.length; di++) {
+                    if (!all[di].bounds || all[di].bounds.cy < h * 0.8) continue;
+                    log("  [" + all[di].depth + "] " + (all[di].className || "").split(".").pop()
+                        + (all[di].clickable ? " [可点击]" : "")
+                        + " text='" + (all[di].text || "") + "'"
+                        + " desc='" + (all[di].desc || "") + "'"
+                        + " at (" + all[di].bounds.cx + "," + all[di].bounds.cy + ")");
+                }
+            }
+
+            for (var i = 0; i < all.length; i++) {
+                if (!all[i].bounds) continue;
+                // 只看屏幕底部20%的可点击元素
+                if (all[i].bounds.cy < h * 0.8) continue;
+                var t = (all[i].text || "").toLowerCase();
+                var d = (all[i].desc || "").toLowerCase();
+                // "发送" / "send" / "发布"
+                if (all[i].clickable && (t.indexOf("发送") >= 0 || d.indexOf("发送") >= 0
+                    || d.indexOf("send") >= 0 || t.indexOf("send") >= 0)) {
+                    log("找到发送按钮: at (" + all[i].bounds.cx + "," + all[i].bounds.cy + ") text='" + all[i].text + "' desc='" + all[i].desc + "'");
+                    return all[i].bounds;
+                }
+            }
+            // 尝试找底部右侧的可点击元素（发送按钮通常在右侧）
+            var rightCandidates = [];
+            for (var k = 0; k < all.length; k++) {
+                if (!all[k].bounds || !all[k].clickable) continue;
+                if (all[k].bounds.cy < h * 0.8) continue;
+                if (all[k].bounds.cx > w * 0.7) {
+                    var cls = (all[k].className || "").toLowerCase();
+                    var txt = (all[k].text || all[k].desc || "");
+                    // 排除输入框和表情/语音等已知按钮
+                    if (txt.indexOf("说点什么") >= 0) continue;
+                    if (txt.indexOf("语音") >= 0 || txt.indexOf("表情") >= 0) continue;
+                    rightCandidates.push(all[k]);
+                }
+            }
+            // 如果有文本变化（不再是"更多选择"），优先选择
+            for (var rc = 0; rc < rightCandidates.length; rc++) {
+                var rtxt = rightCandidates[rc].text || rightCandidates[rc].desc || "";
+                if (rtxt.length > 0 && rtxt !== "更多选择") {
+                    log("找到疑似发送按钮: at (" + rightCandidates[rc].bounds.cx + "," + rightCandidates[rc].bounds.cy + ") text='" + rtxt + "'");
+                    return rightCandidates[rc].bounds;
+                }
+            }
+            // 最后的兜底：最右边的可点击元素
+            if (rightCandidates.length > 0) {
+                // 按 x 坐标排序，取最右边
+                rightCandidates.sort(function(a, b) { return b.bounds.cx - a.bounds.cx; });
+                log("兜底发送按钮: at (" + rightCandidates[0].bounds.cx + "," + rightCandidates[0].bounds.cy + ")");
+                return rightCandidates[0].bounds;
+            }
+        } catch (e) {}
+    }
+    log("等待发送按钮超时");
+    return null;
+}
+
+// 处理延迟到达的回复（超时后到达，需重新导航进入会话发送）
+function handleLateReply(replyText) {
+    if (!replyText || replyText.length === 0) return;
+    var userName = lastProcessedUser;
+    if (!userName) {
+        logError("延迟回复: 无法获取目标用户名，放弃发送");
+        return;
+    }
+    log("延迟回复: 重新导航到 " + userName + " 的会话...");
+    try {
+        // Step 1: 确保闲鱼在前台
+        var pageState = XianyuNavigator.ensureAppForeground();
+        if (pageState === "unknown") {
+            logError("延迟回复: 无法启动闲鱼");
+            return;
+        }
+        log("延迟回复: 闲鱼已在前台, 页面状态=" + pageState);
+
+        var alreadyInConversation = false;
+
+        // 如果已在对话页，检查是否是目标用户
+        if (pageState === "conversation") {
+            var currentUser = XianyuNavigator.getConversationUser();
+            if (currentUser && (currentUser.indexOf(userName) >= 0 || userName.indexOf(currentUser) >= 0)) {
+                log("延迟回复: 已在目标用户会话中");
+                alreadyInConversation = true;
+            } else {
+                back();
+                sleep(800);
+            }
+        }
+
+        if (!alreadyInConversation) {
+            // Step 2: 进入消息列表
+            if (pageState !== "message_list") {
+                if (!XianyuNavigator.goToMessageList()) {
+                    logError("延迟回复: 无法进入消息列表");
+                    return;
+                }
+            }
+            // Step 3: 进入目标会话
+            if (!XianyuNavigator.findConversation(userName)) {
+                logError("延迟回复: 未找到会话 " + userName);
+                return;
+            }
+        }
+
+        // Step 4: 发送回复
+        sleep(500);
+        sendReply(replyText);
+        // Step 5: 返回
+        sleep(500);
+        back();
+        log("延迟回复发送完成");
+    } catch (e) {
+        logError("延迟回复异常: " + e);
+    }
+}
+
 function sendToServer(userName, content, source) {
     if (!ws || !isConnected) {
         log("WebSocket未连接，无法发送");
@@ -608,43 +989,96 @@ function processNotification(userName, notifyContent) {
     processingLock = true;
 
     try {
+        lastProcessedUser = userName; // 记录当前处理的用户（延迟回复时用）
         log("========================================");
         log("开始处理通知: " + userName);
         log("通知内容预览: " + (notifyContent || "").substring(0, 50));
         log("========================================");
 
-        // Step 1: 确保闲鱼在前台
-        if (!XianyuNavigator.ensureAppForeground()) {
+        // Step 1: 确保闲鱼在前台 + 检测页面状态
+        var pageState = XianyuNavigator.ensureAppForeground();
+        if (pageState === "unknown" || pageState === false) {
             logError("Step 1 失败: 无法启动闲鱼");
             sendToServer(userName, notifyContent, "notification_fallback");
             return;
         }
-        log("Step 1 OK: 闲鱼已在前台");
+        log("Step 1 OK: 闲鱼已在前台, 页面状态=" + pageState);
 
-        // Step 2: 进入消息列表
-        if (!XianyuNavigator.goToMessageList()) {
-            logError("Step 2 失败: 无法进入消息列表");
-            sendToServer(userName, notifyContent, "notification_fallback");
-            return;
+        var alreadyInConversation = false;
+
+        // 如果已在某个对话页
+        if (pageState === "conversation") {
+            var currentUser = XianyuNavigator.getConversationUser();
+            log("[检测] 当前对话用户: " + (currentUser || "unknown"));
+            // 检查是否匹配目标用户
+            if (currentUser && (currentUser.indexOf(userName) >= 0 || userName.indexOf(currentUser) >= 0)) {
+                log("[检测] 已在目标用户 " + userName + " 的对话页面，跳过导航");
+                alreadyInConversation = true;
+            } else {
+                // 在别人的对话页，先返回
+                log("[检测] 当前对话用户不是 " + userName + "，返回消息列表...");
+                back();
+                sleep(800);
+                pageState = "message_list"; // 返回后通常在消息列表
+            }
         }
-        log("Step 2 OK: 已进入消息列表");
 
-        // Step 3: 匹配并进入目标会话
-        if (!XianyuNavigator.findConversation(userName)) {
-            logError("Step 3 失败: 未找到会话");
-            sendToServer(userName, notifyContent, "notification_fallback");
-            return;
+        if (!alreadyInConversation) {
+            // Step 2: 进入消息列表
+            if (pageState !== "message_list") {
+                if (!XianyuNavigator.goToMessageList()) {
+                    logError("Step 2 失败: 无法进入消息列表");
+                    sendToServer(userName, notifyContent, "notification_fallback");
+                    return;
+                }
+            }
+            log("Step 2 OK: 已进入消息列表");
+
+            // Step 3: 匹配并进入目标会话
+            if (!XianyuNavigator.findConversation(userName)) {
+                logError("Step 3 失败: 未找到会话");
+                sendToServer(userName, notifyContent, "notification_fallback");
+                return;
+            }
+            log("Step 3 OK: 已进入会话");
         }
-        log("Step 3 OK: 已进入会话");
 
-        // Step 4: 提取完整消息
-        let fullMessage = XianyuNavigator.readFullMessage();
+        // Step 4: 提取完整消息并发送到服务器
+        var msgSent = false;
+        var fullMessage = XianyuNavigator.readFullMessage();
         if (fullMessage && fullMessage.length > 1) {
             log("Step 4 OK: 提取到完整消息: " + fullMessage);
             sendToServer(userName, fullMessage, "xianyu_app");
+            msgSent = true;
         } else {
             log("Step 4 降级: 未能提取完整消息，发送通知原文");
             sendToServer(userName, notifyContent, "notification_fallback");
+            msgSent = true;
+        }
+
+        // Step 4.5: 等待服务器回复（最多30秒）
+        if (msgSent) {
+            waitingForReply = true;
+            pendingReplyText = null;
+            var waitStart = Date.now();
+            var waitTimeout = 72000; // 匹配服务器 OpenClaw 65s 超时 + 余量
+            log("等待服务器回复（最多" + (waitTimeout/1000) + "秒）...");
+
+            while (Date.now() - waitStart < waitTimeout) {
+                if (pendingReplyText !== null) {
+                    log("收到服务器回复，发送到闲鱼...");
+                    sendReply(pendingReplyText);
+                    break;
+                }
+                // 每500ms检查一次（WebSocket回调在另一个线程更新pendingReplyText）
+                sleep(500);
+            }
+
+            if (pendingReplyText === null) {
+                log("等待服务器回复超时（" + (waitTimeout/1000) + "秒），回复可能延迟到达");
+            }
+
+            waitingForReply = false;
         }
 
     } catch (e) {
@@ -653,7 +1087,8 @@ function processNotification(userName, notifyContent) {
     } finally {
         // Step 5: 返回
         try {
-            sleep(500);
+            waitingForReply = false;
+            sleep(300);
             back();
             sleep(500);
         } catch (e) {}
@@ -961,6 +1396,20 @@ function executeCommand(cmd) {
                 // 新增：dump 控件树（调试用）
                 UITree.dumpTexts();
                 result = { success: true, action: "dumpTree" };
+                break;
+            case "reply":
+                // 服务器发来的回复
+                pendingReplyText = cmd.text || "";
+                if (cmd.userName) lastProcessedUser = cmd.userName;
+                log("收到服务器回复: " + (pendingReplyText || "").substring(0, 50));
+                // 如果不在等待状态（超时后到达），重新进入会话发送
+                if (!waitingForReply && pendingReplyText) {
+                    log("回复延迟到达，尝试重新进入会话发送...");
+                    threads.start(function() {
+                        handleLateReply(pendingReplyText);
+                    });
+                }
+                result = { success: true, action: "reply" };
                 break;
             default:
                 result = { success: false, error: "未知指令: " + cmd.action };

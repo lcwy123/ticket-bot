@@ -52,6 +52,20 @@ python scripts/test_modules.py
 
 关闭时反向清理：停止消息监听 → 停止调度器 → 停止飞书客户端 → 断开设备连接
 
+### API 路由总览
+
+| 路由前缀 | 模块 | 用途 |
+|----------|------|------|
+| `/` | `main.py` | 根路径（状态）、`/health`（健康检查） |
+| `/api/agent/*` | `main.py` | Agent 状态、任务执行、计划管理 |
+| `/api/customer-service/*` | `customer_service/` | 客服对话、飞书 Webhook、会话管理 |
+| `/api/ticket/*` | `ticket/` | 票务搜索、报价、订单 |
+| `/api/monitor/*` | `monitor/` | 电影监控手动触发、数据查询 |
+| `/api/agent/device/*` | `autojs_router.py` | AutoJS 设备注册、命令、WebSocket |
+| `/api/notifications/*` | `notification_driver.py` | 通知 Webhook、历史、状态 |
+| `/lark/*` | `lark_agent/` | 飞书 Agent Webhook（手机控制） |
+| `/admin/ticket` | `main.py` | 票务管理 HTML 页面（`app/templates/ticket_admin.html`） |
+
 ## 手机设备控制架构
 
 ### 两条控制链路
@@ -92,12 +106,27 @@ Webhook/ADB通知 → NotificationFilter(过滤广告) → classify(分类)
 
 通知类型：`xianyu_message`, `xianyu_order`, `xianyu_system`
 
-### AutoJS WebSocket 消息转发
+### AutoJS WebSocket 消息闭环（含 Agent 自动回复）
 
-手机通过 WebSocket (`/api/agent/device/ws/{device_id}`) 连接后，可将闲鱼消息实时转发到客服队列：
+手机通过 WebSocket (`/api/agent/device/ws/{device_id}`) 连接后，实现完整的消息收发闭环：
+
 ```
-手机 WebSocket → 收到 type="message" → ChatMessage → CustomerService.queue_message()
+手机通知 → 打开闲鱼 → 无障碍控件树导航 → 提取消息 → WebSocket 上传(type="message")
+  → autojs_router.py → OpenClaw Agent (AI+工具+记忆) → 生成回复
+    → manager.send_command(device_id, {"action":"reply","text":"..."})
+      → 手机等待回复(≤30s) → sendReply() 自动输入+发送 → 用户收到回复
 ```
+
+关键组件：
+- `app/services/openclaw_client.py` — OpenClaw Gateway 桥接客户端
+- `app/services/autojs_router.py` — WebSocket 消息处理器（消息转发 + 回复回传）
+- `scripts/autojs/autojs_websocket.js` — 手机端完整脚本（WebSocket 长连接、通知监听、导航、消息提取、回复发送，主用）
+- `scripts/autojs/autojs_polling.js` — HTTP 轮询模式（备选方案）
+- `scripts/autojs/autojs_message_monitor.js` — 消息监控专用脚本
+- `scripts/autojs/autojs_server.js` — HTTP Server 模式
+- `scripts/autojs/autojs_test.js` — 测试脚本
+
+手机端 `sendReply()` 流程：点击输入框 → setClip()+ACTION_PASTE 粘贴 → 查找/点击发送按钮
 
 详见 `docs/AUTOJS_SETUP.md`
 
@@ -120,16 +149,19 @@ router.py           # FastAPI 路由（/api/customer-service/*）
 
 2. **消息处理流程**：
    ```
-   用户消息 → 消息队列(Redis) → AI处理 → 回复 → 存储会话历史
-                                    ↓
-                           闲鱼消息 → 飞书通知(LarkService)
+   闲鱼消息(手机WebSocket) → OpenClaw Agent(实时回复) → 手机自动发送
+                           → Redis队列(备份) → CustomerService.chat() → 飞书通知
+   飞书消息 → Redis队列 → CustomerService.chat() → 回复到飞书
    ```
 
 3. **AI对话核心**（`CustomerService`）：
    - `chat()` — 基础对话，使用 Anthropic/MiniMax API
    - `chat_with_context()` — 带用户上下文的对话（用户名、订单、偏好）
-   - `queue_message()` — 消息入队
+   - `queue_message()` — 消息入队（Redis）
    - `process_message_queue()` — 后台消费队列
+   
+   注意：闲鱼消息的**实时回复**由 `openclaw_client.py` → OpenClaw Agent 处理，
+   `CustomerService` 的 Redis 队列仅作为备份和飞书通知通道。
 
 4. **会话管理**（全量存储在 Redis）：
    - `xianyu:chat:session:{user_id}` — 用户的会话ID集合
@@ -156,13 +188,16 @@ router.py           # FastAPI 路由（/api/customer-service/*）
 ## 相关服务和设备控制文件
 
 - `app/services/xianyu_app_client.py` — ADB 设备控制
+- `app/services/xianyu_browser.py` — 闲鱼 Playwright 无头浏览器（浏览器模式，`use_app_mode=false`）
+- `app/services/browser/anti_detect.py` — 浏览器反检测（配合 `xianyu_browser.py`）
 - `app/services/autojs_device_client.py` — AutoJS 设备通信与命令队列
-- `app/services/autojs_router.py` — AutoJS API 路由（含 WebSocket 消息转发）
+- `app/services/autojs_router.py` — AutoJS API 路由（含 WebSocket 消息转发 + Agent 回复回传）
+- `app/services/openclaw_client.py` — OpenClaw Gateway 桥接客户端（Agent 调用）
+- `app/services/notification_driver.py` — `NotificationListener`（Webhook 接收 + 签名验证）、`ADBNotificationWatcher`（ADB 轮询）、`create_notification_endpoints()`（注册 `/api/notifications/*` 路由）
 - `app/services/lark_service.py` — 飞书开放 API（发消息、获取用户信息）
 - `app/services/lark_websocket_client.py` — 飞书 WebSocket 长连接客户端
 - `app/services/lark_mobile_agent.py` — 飞书手机控制 Agent
 - `app/modules/lark_agent/router.py` — 飞书 Agent Webhook（手机控制专用）
-- `app/services/browser/anti_detect.py` — 浏览器反检测（浏览器模式）
 
 ## 票务模块架构（`app/modules/ticket/`）
 
@@ -179,6 +214,54 @@ router.py           # FastAPI 路由（/api/customer-service/*）
 - `service.py` — `MonitorService` + `MovieDataService`（豆瓣/猫眼API）+ `XianyuListingService`
 - `scheduler.py` — APScheduler定时任务（每天9点查新片、每30分钟查价格）
 - `router.py` — 手动触发接口
+
+## OpenClaw Agent 集成
+
+本项目的闲鱼消息 Agent 由 [OpenClaw](https://docs.openclaw.ai) 框架驱动，而非直接调用 Anthropic API。
+
+### 架构
+
+```
+ticket-bot (Python)                    OpenClaw (Node.js)
+─────────────────                      ─────────────────
+openclaw_client.py  ──CLI subprocess──→ openclaw gateway call agent
+  (WebSocket RPC)                      → gateway (ws://127.0.0.1:18789)
+                                       → projector agent
+                                         → AI model + tools + memory
+```
+
+### OpenClaw Gateway
+
+- 地址：`ws://127.0.0.1:18789` (loopback)
+- 启动方式：`systemctl --user start openclaw-gateway`（已安装为 systemd daemon）
+- 配置文件：`~/.openclaw/openclaw.json`
+- Agent ID：`projector`
+- Model：`minimax/MiniMax-M2.7-highspeed`（通过 Anthropic Messages API 兼容层）
+- 用 `openclaw doctor` 诊断，`openclaw gateway call health` 检查健康状态
+
+### 桥接客户端 (`app/services/openclaw_client.py`)
+
+通过子进程调用 `openclaw gateway call agent` CLI，传递参数：
+- `sessionKey: "agent:projector:xianyu:{user_id}"` — 保证每用户会话连续性
+- `deliver: false` — Agent 不通过 channel 投递回复，由 ticket-bot 自行处理
+- `thinking: low` — 降低延迟
+- `idempotencyKey` — 幂等键（每消息 UUID）
+- 超时 65 秒，超时或错误返回 `None`
+
+回复提取路径：`result.payloads[0].text`
+
+### 与 CustomerService 的关系
+
+`openclaw_client.py` 处理闲鱼消息的**实时回复**回路。`CustomerService` 保留给：
+- 飞书/Lark 聊天路径
+- Redis 消息备份和飞书通知
+- 消息队列消费（在 `autojs_router.py` 中仍会调用作为备份）
+
+### Device 授权
+
+OpenClaw Gateway 使用 device pairing 授权。若 CLI 报 "scope upgrade pending approval"，
+检查 `~/.openclaw/devices/paired.json` 和 `pending.json`，确保设备 `approvedScopes` 包含
+`operator.write`（调用 `agent` RPC 方法需要）。
 
 ## 配置（`app/config.py`）
 
@@ -200,8 +283,9 @@ router.py           # FastAPI 路由（/api/customer-service/*）
 | `webhook_secret` | Webhook 签名密钥 | - |
 | `service_fee_rate` | 代购手续费率 | `0.05`（5%） |
 | `min_service_fee` | 最低代购费（元） | `2.0` |
-
-注意：`.env.example` 使用旧字段名 `CLAUDE_API_KEY`，实际配置读取的是 `ANTHROPIC_API_KEY`。
+注意：
+- `OPENCLAW_AGENT_ID` 不在 `config.py` 的 `Settings` 类中，由 `openclaw_client.py` 通过 `os.getenv("OPENCLAW_AGENT_ID", "projector")` 直接读取。
+- `.env.example` 使用了旧字段名（`CLAUDE_API_KEY`、`CLAUDE_MODEL`、`CLAUDE_MAX_TOKENS`），但 `config.py` 的 Settings 类读取的是 `ANTHROPIC_API_KEY`、`ANTHROPIC_MODEL`、`ANTHROPIC_MAX_TOKENS`。创建 `.env` 时请使用 `config.py` 中的实际字段名。
 
 ## 参考文档
 

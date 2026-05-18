@@ -439,7 +439,32 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
                     timestamp = msg.get("timestamp", asyncio.get_event_loop().time())
                     logger.info(f"收到手机消息: {user_id} -> {content[:30]}...")
 
-                    # 转发到客服队列
+                    import uuid
+
+                    # 1. 调用 OpenClaw Agent 获取回复
+                    from app.services.openclaw_client import get_openclaw_client
+                    reply_sent = False
+                    try:
+                        openclaw = get_openclaw_client()
+                        reply = await asyncio.wait_for(
+                            openclaw.send_message(user_id, content),
+                            timeout=65.0
+                        )
+                        if reply:
+                            await manager.send_command(device_id, {
+                                "action": "reply",
+                                "id": str(uuid.uuid4())[:8],
+                                "text": reply,
+                                "userName": user_id
+                            })
+                            reply_sent = True
+                            logger.info(f"回复已发送到手机: {user_id} -> {reply[:50]}...")
+                    except asyncio.TimeoutError:
+                        logger.error(f"OpenClaw agent timeout for user {user_id}")
+                    except Exception as e:
+                        logger.error(f"OpenClaw agent error: {e}")
+
+                    # 2. 转发到客服队列（备份 + 飞书通知）
                     from app.modules.customer_service.service import CustomerService, MessageSource, ChatMessage
                     service = CustomerService()
                     chat_msg = ChatMessage(
@@ -450,17 +475,15 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
                         timestamp=timestamp,
                         metadata={"device_id": device_id, "from_phone": True, "source": source}
                     )
-
                     await service.queue_message(chat_msg)
-
-                    # 触发后台处理
                     asyncio.create_task(service.process_message_queue())
 
-                    # 回复确认
+                    # 3. 回复确认
                     await websocket.send_json({
                         "type": "message_received",
                         "status": "ok",
-                        "user_id": user_id
+                        "user_id": user_id,
+                        "reply_sent": reply_sent
                     })
 
             except json.JSONDecodeError:
